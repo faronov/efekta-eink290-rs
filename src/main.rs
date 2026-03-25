@@ -340,7 +340,7 @@ async fn main(_spawner: Spawner) {
         {
             // ── Incoming MAC frame ──────────────────────────
             Either3::First(Ok(indication)) => {
-                if let Some(event) = device.process_incoming(&indication) {
+                if let Some(event) = device.process_incoming(&indication).await {
                     if let StackEvent::CommandReceived {
                         src_addr, endpoint, cluster_id, command_id, seq_number, ref payload,
                     } = event {
