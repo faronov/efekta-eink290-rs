@@ -272,29 +272,29 @@ async fn main(_spawner: Spawner) {
 
         let rpt = device.reporting_mut();
 
-        // Temperature: report on ±0.5°C change (50 centidegrees), 60-300s
+        // Temperature: report on ±0.25°C change (25 centidegrees), 30-900s
         let _ = rpt.configure_for_cluster(1, 0x0402, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0000),
             data_type: ZclDataType::I16,
-            min_interval: 60, max_interval: 300,
-            reportable_change: Some(ZclValue::I16(50)),
+            min_interval: 30, max_interval: 900,
+            reportable_change: Some(ZclValue::I16(25)),
         });
-        // Humidity: report on ±2% change (200 centipercent), 60-300s
+        // Humidity: report on ±0.5% change (50 centipercent), 30-1200s
         let _ = rpt.configure_for_cluster(1, 0x0405, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0000),
             data_type: ZclDataType::U16,
-            min_interval: 60, max_interval: 300,
-            reportable_change: Some(ZclValue::U16(200)),
+            min_interval: 30, max_interval: 1200,
+            reportable_change: Some(ZclValue::U16(50)),
         });
-        // Pressure: report on ±1 hPa change (10 tenth-kPa), 60-300s
+        // Pressure: report on ±1 hPa change (1 in hPa units), 60-1800s
         let _ = rpt.configure_for_cluster(1, 0x0403, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0000),
             data_type: ZclDataType::I16,
-            min_interval: 60, max_interval: 300,
-            reportable_change: Some(ZclValue::I16(10)),
+            min_interval: 60, max_interval: 1800,
+            reportable_change: Some(ZclValue::I16(1)),
         });
         // Illuminance: report on ~50 lux change (5000 ZCL units), 60-300s
         let _ = rpt.configure_for_cluster(1, 0x0400, ReportingConfig {
@@ -341,13 +341,94 @@ async fn main(_spawner: Spawner) {
             // ── Incoming MAC frame ──────────────────────────
             Either3::First(Ok(indication)) => {
                 if let Some(event) = device.process_incoming(&indication) {
-                    // Route Identify cluster commands to our IdentifyCluster
-                    if let StackEvent::CommandReceived { cluster_id, command_id, ref payload, .. } = event {
-                        if cluster_id == ClusterId::IDENTIFY.0 {
-                            let _ = identify_cluster.handle_command(
-                                zigbee_zcl::CommandId(command_id),
-                                payload.as_slice(),
-                            );
+                    if let StackEvent::CommandReceived {
+                        src_addr, endpoint, cluster_id, command_id, seq_number, ref payload,
+                    } = event {
+                        // Handle ZCL global commands: Read Attributes (0x00), Write Attributes (0x02), Discover (0x0C)
+                        match command_id {
+                            0x00 => {
+                                // Read Attributes
+                                use zigbee_zcl::foundation::read_attributes::{ReadAttributesRequest, process_read_dyn};
+                                if let Some(req) = ReadAttributesRequest::parse(payload.as_slice()) {
+                                    let store = cluster_store(
+                                        cluster_id,
+                                        &temp_cluster, &hum_cluster, &press_cluster,
+                                        &illum_cluster, &power_cluster, &identify_cluster,
+                                    );
+                                    if let Some(s) = store {
+                                        let resp = process_read_dyn(s, &req);
+                                        let mut buf = [0u8; 200];
+                                        let len = resp.serialize(&mut buf);
+                                        device.queue_global_response(
+                                            src_addr, endpoint, endpoint, cluster_id,
+                                            seq_number, 0x01, &buf[..len],
+                                        );
+                                    }
+                                }
+                            }
+                            0x02 => {
+                                // Write Attributes
+                                use zigbee_zcl::foundation::write_attributes::{WriteAttributesRequest, process_write_dyn};
+                                if let Some(req) = WriteAttributesRequest::parse(payload.as_slice()) {
+                                    let store = cluster_store_mut(
+                                        cluster_id,
+                                        &mut temp_cluster, &mut hum_cluster, &mut press_cluster,
+                                        &mut illum_cluster, &mut power_cluster, &mut identify_cluster,
+                                    );
+                                    if let Some(s) = store {
+                                        let resp = process_write_dyn(s, &req);
+                                        let mut buf = [0u8; 64];
+                                        let len = resp.serialize(&mut buf);
+                                        device.queue_global_response(
+                                            src_addr, endpoint, endpoint, cluster_id,
+                                            seq_number, 0x04, &buf[..len],
+                                        );
+                                    }
+                                }
+                            }
+                            0x05 => {
+                                // Write Attributes No Response
+                                use zigbee_zcl::foundation::write_attributes::{WriteAttributesRequest, process_write_no_response_dyn};
+                                if let Some(req) = WriteAttributesRequest::parse(payload.as_slice()) {
+                                    let store = cluster_store_mut(
+                                        cluster_id,
+                                        &mut temp_cluster, &mut hum_cluster, &mut press_cluster,
+                                        &mut illum_cluster, &mut power_cluster, &mut identify_cluster,
+                                    );
+                                    if let Some(s) = store {
+                                        process_write_no_response_dyn(s, &req);
+                                    }
+                                }
+                            }
+                            0x0C => {
+                                // Discover Attributes
+                                use zigbee_zcl::foundation::discover::{DiscoverAttributesRequest, process_discover_dyn};
+                                if let Some(req) = DiscoverAttributesRequest::parse(payload.as_slice()) {
+                                    let store = cluster_store(
+                                        cluster_id,
+                                        &temp_cluster, &hum_cluster, &press_cluster,
+                                        &illum_cluster, &power_cluster, &identify_cluster,
+                                    );
+                                    if let Some(s) = store {
+                                        let resp = process_discover_dyn(s, &req);
+                                        let mut buf = [0u8; 128];
+                                        let len = resp.serialize(&mut buf);
+                                        device.queue_global_response(
+                                            src_addr, endpoint, endpoint, cluster_id,
+                                            seq_number, 0x0D, &buf[..len],
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Route Identify cluster commands
+                                if cluster_id == ClusterId::IDENTIFY.0 {
+                                    let _ = identify_cluster.handle_command(
+                                        zigbee_zcl::CommandId(command_id),
+                                        payload.as_slice(),
+                                    );
+                                }
+                            }
                         }
                     }
                     handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer);
@@ -673,6 +754,48 @@ async fn read_sensors(
     }
 
     disp
+}
+
+/// Look up the attribute store (read-only) for a given cluster ID.
+fn cluster_store<'a>(
+    cluster_id: u16,
+    temp: &'a TemperatureCluster,
+    hum: &'a HumidityCluster,
+    press: &'a PressureCluster,
+    illum: &'a IlluminanceCluster,
+    power: &'a PowerConfigCluster,
+    identify: &'a IdentifyCluster,
+) -> Option<&'a dyn zigbee_zcl::clusters::AttributeStoreAccess> {
+    match cluster_id {
+        0x0402 => Some(temp.attributes()),
+        0x0405 => Some(hum.attributes()),
+        0x0403 => Some(press.attributes()),
+        0x0400 => Some(illum.attributes()),
+        0x0001 => Some(power.attributes()),
+        0x0003 => Some(identify.attributes()),
+        _ => None,
+    }
+}
+
+/// Look up the attribute store (mutable) for a given cluster ID.
+fn cluster_store_mut<'a>(
+    cluster_id: u16,
+    temp: &'a mut TemperatureCluster,
+    hum: &'a mut HumidityCluster,
+    press: &'a mut PressureCluster,
+    illum: &'a mut IlluminanceCluster,
+    power: &'a mut PowerConfigCluster,
+    identify: &'a mut IdentifyCluster,
+) -> Option<&'a mut dyn zigbee_zcl::clusters::AttributeStoreMutAccess> {
+    match cluster_id {
+        0x0402 => Some(temp.attributes_mut()),
+        0x0405 => Some(hum.attributes_mut()),
+        0x0403 => Some(press.attributes_mut()),
+        0x0400 => Some(illum.attributes_mut()),
+        0x0001 => Some(power.attributes_mut()),
+        0x0003 => Some(identify.attributes_mut()),
+        _ => None,
+    }
 }
 
 fn handle_stack_event(
