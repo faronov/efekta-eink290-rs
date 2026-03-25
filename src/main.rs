@@ -249,6 +249,7 @@ async fn main(_spawner: Spawner) {
         .manufacturer("Efekta")
         .model("EInk290-MultiSensor")
         .sw_build(concat!(env!("CARGO_PKG_VERSION"), "-rs"))
+        .date_code(env!("BUILD_DATE"))
         .channels(zigbee_types::ChannelMask::ALL_2_4GHZ)
         .endpoint(1, PROFILE_HOME_AUTOMATION, 0x0302, |ep| {
             ep.cluster_server(0x0000) // Basic
@@ -261,6 +262,65 @@ async fn main(_spawner: Spawner) {
                 .cluster_client(0x0019) // OTA Upgrade (client role)
         })
         .build();
+
+    // ── Default reporting thresholds ────────────────────────
+    // These are initial defaults; coordinator can override via Configure Reporting (0x06).
+    {
+        use zigbee_zcl::foundation::reporting::{ReportDirection, ReportingConfig};
+        use zigbee_zcl::data_types::{ZclDataType, ZclValue};
+        use zigbee_zcl::AttributeId;
+
+        let rpt = device.reporting_mut();
+
+        // Temperature: report on ±0.5°C change (50 centidegrees), 60-300s
+        let _ = rpt.configure_for_cluster(1, 0x0402, ReportingConfig {
+            direction: ReportDirection::Send,
+            attribute_id: AttributeId(0x0000),
+            data_type: ZclDataType::I16,
+            min_interval: 60, max_interval: 300,
+            reportable_change: Some(ZclValue::I16(50)),
+        });
+        // Humidity: report on ±2% change (200 centipercent), 60-300s
+        let _ = rpt.configure_for_cluster(1, 0x0405, ReportingConfig {
+            direction: ReportDirection::Send,
+            attribute_id: AttributeId(0x0000),
+            data_type: ZclDataType::U16,
+            min_interval: 60, max_interval: 300,
+            reportable_change: Some(ZclValue::U16(200)),
+        });
+        // Pressure: report on ±1 hPa change (10 tenth-kPa), 60-300s
+        let _ = rpt.configure_for_cluster(1, 0x0403, ReportingConfig {
+            direction: ReportDirection::Send,
+            attribute_id: AttributeId(0x0000),
+            data_type: ZclDataType::I16,
+            min_interval: 60, max_interval: 300,
+            reportable_change: Some(ZclValue::I16(10)),
+        });
+        // Illuminance: report on ~50 lux change (5000 ZCL units), 60-300s
+        let _ = rpt.configure_for_cluster(1, 0x0400, ReportingConfig {
+            direction: ReportDirection::Send,
+            attribute_id: AttributeId(0x0000),
+            data_type: ZclDataType::U16,
+            min_interval: 60, max_interval: 300,
+            reportable_change: Some(ZclValue::U16(5000)),
+        });
+        // Battery %: report on ±1% (2 in 0-200 range), 300-3600s
+        let _ = rpt.configure_for_cluster(1, 0x0001, ReportingConfig {
+            direction: ReportDirection::Send,
+            attribute_id: AttributeId(0x0021),
+            data_type: ZclDataType::U8,
+            min_interval: 300, max_interval: 3600,
+            reportable_change: Some(ZclValue::U8(2)),
+        });
+        // Battery voltage: report on ±100mV, 300-3600s
+        let _ = rpt.configure_for_cluster(1, 0x0001, ReportingConfig {
+            direction: ReportDirection::Send,
+            attribute_id: AttributeId(0x0020),
+            data_type: ZclDataType::U8,
+            min_interval: 300, max_interval: 3600,
+            reportable_change: Some(ZclValue::U8(1)),
+        });
+    }
 
     let mut net_state = NetworkState::Initial;
     let mut button_press_start: Option<Instant> = None;
