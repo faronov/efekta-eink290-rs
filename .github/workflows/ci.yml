@@ -65,10 +65,16 @@ jobs:
           print('Merged hex: boot + app')
           "
 
+          # Extract version from Cargo.toml for OTA package
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          OTA_VER=$(printf "0x%02X%02X%04X" "$MAJOR" "$MINOR" "$PATCH")
+          echo "Cargo.toml version: $VERSION → OTA version: $OTA_VER"
+
           # OTA .zigbee package (app only, no bootloader)
           python3 scripts/make_ota.py "$APP_ELF.bin" "$APP_ELF.zigbee" \
             --manufacturer 0x1234 --image-type 0x0001 \
-            --version 0x00010000 --string "Efekta EInk290 nRF52840"
+            --version "$OTA_VER" --string "Efekta EInk290 nRF52840 v$VERSION"
 
           echo "=== Sizes ==="
           rust-size "$APP_ELF"

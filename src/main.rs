@@ -221,7 +221,7 @@ async fn main(_spawner: Spawner) {
     let ota_config = OtaConfig {
         manufacturer_code: 0x1234,
         image_type: 0x0001,
-        current_version: 0x0001_0000, // 1.0.0
+        current_version: env!("OTA_VERSION_U32").parse().unwrap(),
         endpoint: 1,
         block_size: 48,
         auto_accept: true,
@@ -245,7 +245,7 @@ async fn main(_spawner: Spawner) {
         .device_type(DeviceType::EndDevice)
         .manufacturer("Efekta")
         .model("EInk290-MultiSensor")
-        .sw_build("0.1.0-rs")
+        .sw_build(concat!(env!("CARGO_PKG_VERSION"), "-rs"))
         .channels(zigbee_types::ChannelMask::ALL_2_4GHZ)
         .endpoint(1, PROFILE_HOME_AUTOMATION, 0x0302, |ep| {
             ep.cluster_server(0x0000) // Basic
