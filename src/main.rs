@@ -156,8 +156,8 @@ async fn main(_spawner: Spawner) {
     let channel_config = saadc::ChannelConfig::single_ended(saadc::VddInput);
     let mut adc = Saadc::new(p.SAADC, Irqs, saadc_config, [channel_config]);
 
-    // ── Buzzer (P0.30) — GPIO output, driven by software/PWM ─
-    let mut _buzzer = gpio::Output::new(p.P0_30, gpio::Level::Low, gpio::OutputDrive::Standard);
+    // ── Buzzer (P0.30) — software bit-bang tone ─────────────
+    let mut buzzer = gpio::Output::new(p.P0_30, gpio::Level::Low, gpio::OutputDrive::Standard);
 
     // ── UART debug mode: TX=P0.09, RX=P0.10 at 115200 ──────
     #[cfg(feature = "uart-debug")]
@@ -259,8 +259,7 @@ async fn main(_spawner: Spawner) {
             // ── Incoming MAC frame ──────────────────────────
             Either3::First(Ok(indication)) => {
                 if let Some(event) = device.process_incoming(&indication) {
-                    handle_stack_event(&event, &mut net_state, &mut led);
-                }
+                    handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer);                }
             }
             Either3::First(Err(_)) => warn!("MAC receive error"),
 
@@ -361,7 +360,7 @@ async fn main(_spawner: Spawner) {
                 }
 
                 if let TickResult::Event(ref e) = device.tick(0).await {
-                    handle_stack_event(e, &mut net_state, &mut led);
+                    handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
                 }
             }
 
@@ -369,7 +368,7 @@ async fn main(_spawner: Spawner) {
             Either3::Third(_) => {
                 // Tick reporting timers first
                 if let TickResult::Event(ref e) = device.tick(REPORT_INTERVAL_SECS as u16).await {
-                    handle_stack_event(e, &mut net_state, &mut led);
+                    handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
                 }
 
                 if device.is_joined() {
@@ -538,6 +537,7 @@ fn handle_stack_event(
     event: &StackEvent,
     net_state: &mut NetworkState,
     led: &mut gpio::Output<'_>,
+    buzzer: &mut gpio::Output<'_>,
 ) {
     match event {
         StackEvent::Joined {
@@ -551,6 +551,7 @@ fn handle_stack_event(
             );
             *net_state = NetworkState::Joined;
             led.set_high(); // LED off (active low)
+            buzzer_chirp(buzzer);
         }
         StackEvent::Left => {
             info!("Left network");
@@ -579,6 +580,31 @@ async fn led_flash(led: &mut gpio::Output<'_>, count: u8) {
         if i < count - 1 {
             Timer::after(Duration::from_millis(100)).await;
         }
+    }
+}
+
+/// Buzzer "join confirmed" chirp: 400 Hz for 10 ms, then 200 Hz for 5 ms.
+/// Uses busy-wait bit-bang, matching the original Arduino firmware.
+fn buzzer_chirp(pin: &mut gpio::Output<'_>) {
+    buzzer_tone(pin, 400, 10);
+    buzzer_tone(pin, 200, 5);
+}
+
+/// Bit-bang a square wave on the buzzer pin.
+/// `freq_hz`: tone frequency, `duration_ms`: how long to play.
+/// Uses cortex-m busy-wait at 64 MHz (nRF52840 HFCLK).
+fn buzzer_tone(pin: &mut gpio::Output<'_>, freq_hz: u32, duration_ms: u32) {
+    let half_period_us = 500_000 / freq_hz;
+    // 64 MHz → 64 cycles per µs
+    let half_period_cycles = half_period_us * 64;
+    let total_cycles = duration_ms * 1000 * 64;
+    let mut elapsed = 0u32;
+    while elapsed < total_cycles {
+        pin.set_high();
+        cortex_m::asm::delay(half_period_cycles);
+        pin.set_low();
+        cortex_m::asm::delay(half_period_cycles);
+        elapsed += half_period_cycles * 2;
     }
 }
 

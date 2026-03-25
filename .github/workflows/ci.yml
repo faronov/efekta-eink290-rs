@@ -38,12 +38,15 @@ jobs:
       - name: Install cargo-binutils
         run: cargo install cargo-binutils
 
-      - name: Generate hex and bin
+      - name: Generate hex, bin, and OTA
         run: |
           ELF=target/thumbv7em-none-eabihf/release/efekta-eink290-rs
           rust-objcopy -O ihex   "$ELF" "$ELF.hex"
           rust-objcopy -O binary "$ELF" "$ELF.bin"
-          ls -lh "$ELF" "$ELF.hex" "$ELF.bin"
+          python3 scripts/make_ota.py "$ELF.bin" "$ELF.zigbee" \
+            --manufacturer 0x1234 --image-type 0x0001 \
+            --version 0x00000100 --string "Efekta EInk290 nRF52840"
+          ls -lh "$ELF" "$ELF.hex" "$ELF.bin" "$ELF.zigbee"
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
@@ -53,6 +56,7 @@ jobs:
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs.hex
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs.bin
+            target/thumbv7em-none-eabihf/release/efekta-eink290-rs.zigbee
 
   build-uart-debug:
     name: Build UART debug firmware
