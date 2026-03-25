@@ -42,6 +42,7 @@
 use embassy_executor::Spawner;
 use embassy_futures::select::{select3, Either3};
 use embassy_nrf::saadc::{self, Saadc};
+use embassy_nrf::spim;
 use embassy_nrf::twim::{self, Twim};
 use embassy_nrf::{self as _, bind_interrupts, gpio, peripherals, radio};
 use embassy_time::{Duration, Instant, Timer};
@@ -62,7 +63,10 @@ use zigbee_zcl::clusters::Cluster;
 use zigbee_zcl::ClusterId;
 
 mod bme280;
+mod display;
 mod max44009;
+mod paint;
+mod ssd1680;
 
 const REPORT_INTERVAL_SECS: u64 = 60;
 const LONG_PRESS_MS: u64 = 5000;
@@ -78,6 +82,7 @@ const BATTERY_SCALE_MV_DEN: u32 = 1024;
 bind_interrupts!(struct Irqs {
     RADIO => radio::InterruptHandler<peripherals::RADIO>;
     TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
+    TWISPI1 => spim::InterruptHandler<peripherals::TWISPI1>;
     SAADC => saadc::InterruptHandler;
 });
 
@@ -108,6 +113,19 @@ async fn main(_spawner: Spawner) {
     let saadc_config = saadc::Config::default();
     let channel_config = saadc::ChannelConfig::single_ended(saadc::VddInput);
     let mut adc = Saadc::new(p.SAADC, Irqs, saadc_config, [channel_config]);
+
+    // ── SPI1 for e-paper display (SSD1680) ──────────────────
+    let mut spi_config = spim::Config::default();
+    spi_config.frequency = spim::Frequency::M2;
+    let spi = spim::Spim::new(p.TWISPI1, Irqs, p.P0_08, p.P0_06, p.P0_05, spi_config);
+    let cs = gpio::Output::new(p.P0_07, gpio::Level::High, gpio::OutputDrive::Standard);
+    let dc = gpio::Output::new(p.P0_27, gpio::Level::Low, gpio::OutputDrive::Standard);
+    let rst = gpio::Output::new(p.P0_26, gpio::Level::High, gpio::OutputDrive::Standard);
+    let busy = gpio::Input::new(p.P0_04, gpio::Pull::None);
+
+    let mut epd = ssd1680::Ssd1680::new(spi, cs, dc, rst, busy).await;
+    let mut epd_paint = paint::Paint::new();
+    info!("E-paper display ready");
 
     // ── Initialize sensors ──────────────────────────────────
     let bme280_ok = bme280::init(&mut i2c, BME280_ADDR).await;
@@ -195,7 +213,7 @@ async fn main(_spawner: Spawner) {
                             NetworkState::Joined => {
                                 info!("Short press → force report");
                                 led_flash(&mut led, 3).await;
-                                read_sensors(
+                                let mut disp_data = read_sensors(
                                     &mut i2c,
                                     &mut adc,
                                     &mut temp_cluster,
@@ -244,6 +262,13 @@ async fn main(_spawner: Spawner) {
                                         illum_cluster.attributes(),
                                     )
                                     .await;
+
+                                // Update e-paper display
+                                disp_data.joined = net_state == NetworkState::Joined;
+                                epd.wake().await;
+                                display::draw_dashboard(&mut epd_paint, &disp_data);
+                                epd.display(&epd_paint.buf).await;
+                                epd.sleep().await;
                             }
                             NetworkState::Joining => {
                                 info!("Already joining…");
@@ -274,7 +299,7 @@ async fn main(_spawner: Spawner) {
 
                 if device.is_joined() {
                     // Read sensors and update cluster attributes
-                    read_sensors(
+                    let mut disp_data = read_sensors(
                         &mut i2c,
                         &mut adc,
                         &mut temp_cluster,
@@ -324,6 +349,13 @@ async fn main(_spawner: Spawner) {
                             illum_cluster.attributes(),
                         )
                         .await;
+
+                    // Update e-paper display
+                    disp_data.joined = true;
+                    epd.wake().await;
+                    display::draw_dashboard(&mut epd_paint, &disp_data);
+                    epd.display(&epd_paint.buf).await;
+                    epd.sleep().await;
                 }
             }
         }
@@ -331,6 +363,7 @@ async fn main(_spawner: Spawner) {
 }
 
 /// Read all sensors and update ZCL cluster attribute values.
+/// Returns display data for the e-paper screen.
 #[allow(clippy::too_many_arguments)]
 async fn read_sensors(
     i2c: &mut Twim<'_, peripherals::TWISPI0>,
@@ -342,7 +375,7 @@ async fn read_sensors(
     power_cluster: &mut PowerConfigCluster,
     bme280_ok: bool,
     max44009_ok: bool,
-) {
+) -> display::DisplayData {
     // ── Battery voltage via SAADC (VDD/3 internal) ──────
     let mut buf = [0i16; 1];
     adc.sample(&mut buf).await;
@@ -363,6 +396,15 @@ async fn read_sensors(
     power_cluster.set_battery_percentage(batt_pct);
     info!("Battery: {}mV ({}%)", battery_mv, batt_pct / 2);
 
+    let mut disp = display::DisplayData {
+        temperature_centideg: 0,
+        humidity_centipct: 0,
+        pressure_hpa: 0,
+        lux: 0,
+        battery_pct: batt_pct / 2,
+        joined: false, // caller sets this
+    };
+
     // ── BME280: temperature, humidity, pressure ─────────
     if bme280_ok {
         if let Some(data) = bme280::read(i2c, BME280_ADDR).await {
@@ -377,6 +419,10 @@ async fn read_sensors(
             temp_cluster.set_temperature(data.temperature_centideg);
             hum_cluster.set_humidity(data.humidity_centipct);
             press_cluster.set_pressure(data.pressure_hpa as i16);
+
+            disp.temperature_centideg = data.temperature_centideg;
+            disp.humidity_centipct = data.humidity_centipct;
+            disp.pressure_hpa = data.pressure_hpa;
         } else {
             warn!("BME280 read failed");
         }
@@ -395,10 +441,13 @@ async fn read_sensors(
             };
             info!("{} lux → ZCL {}", lux, illum_zcl);
             illum_cluster.set_illuminance(illum_zcl);
+            disp.lux = lux;
         } else {
             warn!("MAX44009 read failed");
         }
     }
+
+    disp
 }
 
 fn handle_stack_event(
