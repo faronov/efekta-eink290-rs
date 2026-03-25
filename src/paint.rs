@@ -221,15 +221,76 @@ static FONT_5X7_DATA: [u8; 475] = [
     0x10,0x08,0x08,0x10,0x08,
 ];
 
+/// 24×40 large digit font (7-segment style, digits 0-9).
+/// Format: 5 segment rows × 3 packed bytes = 15 bytes per digit.
+/// Each segment row is rendered as 8 identical pixel rows.
+/// From EFEKTALAB efekta_eink290_nrf52840 (Apache-2.0).
+pub const LARGE_DIGIT_W: u16 = 24;
+pub const LARGE_DIGIT_H: u16 = 40;
+pub const LARGE_DIGIT_GAP: u16 = 4;
+
+#[rustfmt::skip]
+pub static LARGE_DIGIT_DATA: [u8; 150] = [
+    // 0
+    0xFF,0xFF,0xFF, 0xC0,0x00,0x03, 0xC0,0x00,0x03, 0xC0,0x00,0x03, 0xFF,0xFF,0xFF,
+    // 1
+    0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F,
+    // 2
+    0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF, 0xF0,0x00,0x00, 0xFF,0xFF,0xFF,
+    // 3
+    0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF,
+    // 4
+    0xC0,0x00,0x0F, 0xC0,0x00,0x0F, 0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0x00,0x00,0x0F,
+    // 5
+    0xFF,0xFF,0xFF, 0xF0,0x00,0x00, 0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF,
+    // 6
+    0xFF,0xFF,0xFF, 0xF0,0x00,0x00, 0xFF,0xFF,0xFF, 0xF0,0x00,0x0F, 0xFF,0xFF,0xFF,
+    // 7
+    0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F,
+    // 8
+    0xFF,0xFF,0xFF, 0xF0,0x00,0x0F, 0xFF,0xFF,0xFF, 0xF0,0x00,0x0F, 0xFF,0xFF,0xFF,
+    // 9
+    0xFF,0xFF,0xFF, 0xF0,0x00,0x0F, 0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF,
+];
+
+/// Rotation setting for the paint context.
+#[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+pub enum Rotation {
+    /// Portrait 128×296 (physical layout, no transform).
+    Deg0,
+    /// Landscape 296×128 (90° clockwise).
+    Deg90,
+}
+
 pub struct Paint {
     pub buf: [u8; BUF_SIZE],
+    pub rotation: Rotation,
 }
 
 impl Paint {
-    /// Create a new paint buffer, filled white.
+    /// Create a new paint buffer (landscape by default), filled white.
     pub fn new() -> Self {
         Self {
             buf: [0xFF; BUF_SIZE],
+            rotation: Rotation::Deg90,
+        }
+    }
+
+    /// Logical width (after rotation).
+    pub fn width(&self) -> u16 {
+        match self.rotation {
+            Rotation::Deg0 => WIDTH,
+            Rotation::Deg90 => HEIGHT,
+        }
+    }
+
+    /// Logical height (after rotation).
+    #[allow(dead_code)]
+    pub fn height(&self) -> u16 {
+        match self.rotation {
+            Rotation::Deg0 => HEIGHT,
+            Rotation::Deg90 => WIDTH,
         }
     }
 
@@ -239,17 +300,30 @@ impl Paint {
         self.buf.fill(fill);
     }
 
-    /// Set a single pixel. `color`: 0 = black, 1 = white.
-    pub fn pixel(&mut self, x: u16, y: u16, color: u8) {
-        if x >= WIDTH || y >= HEIGHT {
+    /// Set a physical pixel (no rotation).
+    fn set_physical(&mut self, px: u16, py: u16, color: u8) {
+        if px >= WIDTH || py >= HEIGHT {
             return;
         }
-        let idx = ((y as usize) * (WIDTH as usize) + (x as usize)) / 8;
-        let bit = 7 - ((x as usize) % 8);
+        let idx = ((py as usize) * (WIDTH as usize) + (px as usize)) / 8;
+        let bit = 7 - ((px as usize) % 8);
         if color == BLACK {
             self.buf[idx] &= !(1 << bit);
         } else {
             self.buf[idx] |= 1 << bit;
+        }
+    }
+
+    /// Set a logical pixel (rotation-aware).
+    /// In Deg90 mode: logical (x,y) in 296×128 → physical (127−y, x).
+    pub fn pixel(&mut self, x: u16, y: u16, color: u8) {
+        match self.rotation {
+            Rotation::Deg0 => self.set_physical(x, y, color),
+            Rotation::Deg90 => {
+                if x < HEIGHT && y < WIDTH {
+                    self.set_physical((WIDTH - 1) - y, x, color);
+                }
+            }
         }
     }
 
@@ -261,7 +335,6 @@ impl Paint {
     }
 
     /// Vertical line.
-    #[allow(dead_code)]
     pub fn vline(&mut self, x: u16, y: u16, h: u16, color: u8) {
         for dy in 0..h {
             self.pixel(x, y + dy, color);
@@ -269,10 +342,37 @@ impl Paint {
     }
 
     /// Filled rectangle.
-    #[allow(dead_code)]
     pub fn fill_rect(&mut self, x: u16, y: u16, w: u16, h: u16, color: u8) {
         for dy in 0..h {
             self.hline(x, y + dy, w, color);
+        }
+    }
+
+    /// Line (Bresenham's algorithm).
+    #[allow(dead_code)]
+    pub fn line(&mut self, x0: i16, y0: i16, x1: i16, y1: i16, color: u8) {
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        let sx: i16 = if x0 < x1 { 1 } else { -1 };
+        let sy: i16 = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        let (mut x, mut y) = (x0, y0);
+        loop {
+            if x >= 0 && y >= 0 {
+                self.pixel(x as u16, y as u16, color);
+            }
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
         }
     }
 
@@ -288,7 +388,6 @@ impl Paint {
                 if bits & (1 << row) != 0 {
                     self.pixel(x + col, y + row, color);
                 } else {
-                    // Draw background as opposite colour for clean text
                     self.pixel(x + col, y + row, color ^ 1);
                 }
             }
@@ -302,5 +401,28 @@ impl Paint {
         for ch in s.bytes() {
             cx += self.draw_char(cx, y, ch, font, color);
         }
+    }
+
+    /// Render one large 7-segment digit (24×40). Returns glyph width (24).
+    pub fn draw_large_digit(&mut self, x: u16, y: u16, digit: u8, color: u8) -> u16 {
+        if digit > 9 {
+            return LARGE_DIGIT_W;
+        }
+        let base = digit as usize * 15;
+        for seg in 0..5u16 {
+            let off = base + seg as usize * 3;
+            let row = [
+                LARGE_DIGIT_DATA[off],
+                LARGE_DIGIT_DATA[off + 1],
+                LARGE_DIGIT_DATA[off + 2],
+            ];
+            for py in 0..8u16 {
+                for px in 0..LARGE_DIGIT_W {
+                    let on = (row[(px / 8) as usize] >> (7 - (px % 8))) & 1 == 1;
+                    self.pixel(x + px, y + seg * 8 + py, if on { color } else { color ^ 1 });
+                }
+            }
+        }
+        LARGE_DIGIT_W
     }
 }

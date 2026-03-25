@@ -19,7 +19,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: thumbv7em-none-eabihf
-          components: clippy, rustfmt
+          components: clippy, rustfmt, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
 
@@ -35,8 +35,21 @@ jobs:
       - name: Build release
         run: cargo build --release
 
-      - name: Upload firmware artifact
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils
+
+      - name: Generate hex and bin
+        run: |
+          ELF=target/thumbv7em-none-eabihf/release/efekta-eink290-rs
+          rust-objcopy -O ihex   "$ELF" "$ELF.hex"
+          rust-objcopy -O binary "$ELF" "$ELF.bin"
+          ls -lh "$ELF" "$ELF.hex" "$ELF.bin"
+
+      - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
           name: efekta-eink290-firmware
-          path: target/thumbv7em-none-eabihf/release/efekta-eink290-rs
+          path: |
+            target/thumbv7em-none-eabihf/release/efekta-eink290-rs
+            target/thumbv7em-none-eabihf/release/efekta-eink290-rs.hex
+            target/thumbv7em-none-eabihf/release/efekta-eink290-rs.bin

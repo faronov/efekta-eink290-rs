@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Efekta E-Ink 290 Display Preview</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #2a2520;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'IBM Plex Mono', monospace;
+    color: #908880;
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse at 50% 40%, #342e28, #1a1614);
+    pointer-events: none;
+    z-index: -1;
+  }
+  h1 {
+    font-size: 11px; font-weight: 500; letter-spacing: 2.5px;
+    text-transform: uppercase; color: #5a5550; margin-bottom: 28px;
+  }
+  h1 span { color: #a8a098; }
+  .device-case {
+    background: linear-gradient(170deg, #2e2e30 0%, #1c1c1e 40%, #161618 100%);
+    border-radius: 18px;
+    padding: 18px 16px 18px 22px;
+    display: flex; align-items: center; gap: 14px;
+    position: relative;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.06) inset,
+      0 -2px 0 rgba(0,0,0,0.4) inset,
+      0 30px 80px rgba(0,0,0,0.6),
+      0 4px 16px rgba(0,0,0,0.4),
+      0 0 0 1px rgba(255,255,255,0.03);
+  }
+  .screen-recess {
+    background: #060604;
+    border-radius: 6px;
+    padding: 8px;
+    box-shadow:
+      inset 0 3px 10px rgba(0,0,0,0.9),
+      inset 0 -1px 4px rgba(0,0,0,0.3),
+      0 1px 0 rgba(255,255,255,0.03);
+  }
+  #epaper {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    border-radius: 2px;
+  }
+  .speaker-grille {
+    display: grid;
+    grid-template-columns: repeat(3, 6px);
+    grid-template-rows: repeat(6, 6px);
+    gap: 3px;
+  }
+  .speaker-grille i {
+    width: 4px; height: 4px; border-radius: 50%;
+    background: #0e0e10;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.9), 0 0.5px 0 rgba(255,255,255,0.04);
+  }
+  .controls {
+    margin-top: 32px;
+    display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+    max-width: 700px;
+  }
+  .control-group {
+    display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 8px;
+    padding: 8px 12px;
+  }
+  .control-group label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 1.5px; color: #686058;
+  }
+  .slider-row { display: flex; align-items: center; gap: 6px; }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    width: 90px; height: 3px; background: #3a3530; border-radius: 2px; outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 12px; height: 12px;
+    border-radius: 50%; background: #908880; cursor: pointer;
+  }
+  .value-display {
+    font-size: 11px; color: #a09890; min-width: 36px;
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  .zb-btn {
+    background: #2a6a3a; color: #80d090; border: none; border-radius: 4px;
+    padding: 3px 10px; font-family: inherit; font-size: 10px; cursor: pointer;
+    letter-spacing: 1px;
+  }
+  .zb-btn:not(.active) { background: #4a2a2a; color: #d08080; }
+</style>
+</head>
+<body>
+<h1><span>Efekta E-Ink 290</span> &mdash; nRF52840 + SSD1680</h1>
+<div class="device-case">
+  <div class="screen-recess">
+    <canvas id="epaper" width="296" height="128"></canvas>
+  </div>
+  <div class="speaker-grille">
+    <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+    <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+  </div>
+</div>
+<div class="controls">
+  <div class="control-group">
+    <label>Temperature</label>
+    <div class="slider-row">
+      <input type="range" id="temp" min="-200" max="500" value="235">
+      <span class="value-display" id="tempVal">23.5</span>
+    </div>
+  </div>
+  <div class="control-group">
+    <label>Humidity</label>
+    <div class="slider-row">
+      <input type="range" id="hum" min="0" max="1000" value="452">
+      <span class="value-display" id="humVal">45.2</span>
+    </div>
+  </div>
+  <div class="control-group">
+    <label>Pressure</label>
+    <div class="slider-row">
+      <input type="range" id="press" min="300" max="1100" value="1013">
+      <span class="value-display" id="pressVal">1013</span>
+    </div>
+  </div>
+  <div class="control-group">
+    <label>Light</label>
+    <div class="slider-row">
+      <input type="range" id="lux" min="0" max="10000" value="1250">
+      <span class="value-display" id="luxVal">1250</span>
+    </div>
+  </div>
+  <div class="control-group">
+    <label>Battery</label>
+    <div class="slider-row">
+      <input type="range" id="bat" min="0" max="100" value="85">
+      <span class="value-display" id="batVal">85</span>
+    </div>
+  </div>
+  <div class="control-group">
+    <label>Zigbee</label>
+    <button class="zb-btn active" id="zbToggle" onclick="toggleZb()">Joined</button>
+  </div>
+</div>
+<script>
+var FONT = [
+  [0x00,0x00,0x00,0x00,0x00],[0x00,0x00,0x5F,0x00,0x00],[0x00,0x07,0x00,0x07,0x00],
+  [0x14,0x7F,0x14,0x7F,0x14],[0x24,0x2A,0x7F,0x2A,0x12],[0x23,0x13,0x08,0x64,0x62],
+  [0x36,0x49,0x55,0x22,0x50],[0x00,0x05,0x03,0x00,0x00],[0x00,0x1C,0x22,0x41,0x00],
+  [0x00,0x41,0x22,0x1C,0x00],[0x14,0x08,0x3E,0x08,0x14],[0x08,0x08,0x3E,0x08,0x08],
+  [0x00,0x50,0x30,0x00,0x00],[0x08,0x08,0x08,0x08,0x08],[0x00,0x60,0x60,0x00,0x00],
+  [0x20,0x10,0x08,0x04,0x02],[0x3E,0x51,0x49,0x45,0x3E],[0x00,0x42,0x7F,0x40,0x00],
+  [0x42,0x61,0x51,0x49,0x46],[0x21,0x41,0x45,0x4B,0x31],[0x18,0x14,0x12,0x7F,0x10],
+  [0x27,0x45,0x45,0x45,0x39],[0x3C,0x4A,0x49,0x49,0x30],[0x01,0x71,0x09,0x05,0x03],
+  [0x36,0x49,0x49,0x49,0x36],[0x06,0x49,0x49,0x29,0x1E],[0x00,0x36,0x36,0x00,0x00],
+  [0x00,0x56,0x36,0x00,0x00],[0x08,0x14,0x22,0x41,0x00],[0x14,0x14,0x14,0x14,0x14],
+  [0x00,0x41,0x22,0x14,0x08],[0x02,0x01,0x51,0x09,0x06],[0x32,0x49,0x79,0x41,0x3E],
+  [0x7E,0x11,0x11,0x11,0x7E],[0x7F,0x49,0x49,0x49,0x36],[0x3E,0x41,0x41,0x41,0x22],
+  [0x7F,0x41,0x41,0x22,0x1C],[0x7F,0x49,0x49,0x49,0x41],[0x7F,0x09,0x09,0x09,0x01],
+  [0x3E,0x41,0x49,0x49,0x7A],[0x7F,0x08,0x08,0x08,0x7F],[0x00,0x41,0x7F,0x41,0x00],
+  [0x20,0x40,0x41,0x3F,0x01],[0x7F,0x08,0x14,0x22,0x41],[0x7F,0x40,0x40,0x40,0x40],
+  [0x7F,0x02,0x0C,0x02,0x7F],[0x7F,0x04,0x08,0x10,0x7F],[0x3E,0x41,0x41,0x41,0x3E],
+  [0x7F,0x09,0x09,0x09,0x06],[0x3E,0x41,0x51,0x21,0x5E],[0x7F,0x09,0x19,0x29,0x46],
+  [0x46,0x49,0x49,0x49,0x31],[0x01,0x01,0x7F,0x01,0x01],[0x3F,0x40,0x40,0x40,0x3F],
+  [0x1F,0x20,0x40,0x20,0x1F],[0x3F,0x40,0x38,0x40,0x3F],[0x63,0x14,0x08,0x14,0x63],
+  [0x07,0x08,0x70,0x08,0x07],[0x61,0x51,0x49,0x45,0x43],[0x00,0x7F,0x41,0x41,0x00],
+  [0x02,0x04,0x08,0x10,0x20],[0x00,0x41,0x41,0x7F,0x00],[0x04,0x02,0x01,0x02,0x04],
+  [0x40,0x40,0x40,0x40,0x40],[0x00,0x01,0x02,0x04,0x00],[0x20,0x54,0x54,0x54,0x78],
+  [0x7F,0x48,0x44,0x44,0x38],[0x38,0x44,0x44,0x44,0x20],[0x38,0x44,0x44,0x48,0x7F],
+  [0x38,0x54,0x54,0x54,0x18],[0x08,0x7E,0x09,0x01,0x02],[0x0C,0x52,0x52,0x52,0x3E],
+  [0x7F,0x08,0x04,0x04,0x78],[0x00,0x44,0x7D,0x40,0x00],[0x20,0x40,0x44,0x3D,0x00],
+  [0x7F,0x10,0x28,0x44,0x00],[0x00,0x41,0x7F,0x40,0x00],[0x7C,0x04,0x18,0x04,0x78],
+  [0x7C,0x08,0x04,0x04,0x78],[0x38,0x44,0x44,0x44,0x38],[0x7C,0x14,0x14,0x14,0x08],
+  [0x08,0x14,0x14,0x18,0x7C],[0x7C,0x08,0x04,0x04,0x08],[0x48,0x54,0x54,0x54,0x20],
+  [0x04,0x3F,0x44,0x40,0x20],[0x3C,0x40,0x40,0x20,0x7C],[0x1C,0x20,0x40,0x20,0x1C],
+  [0x3C,0x40,0x30,0x40,0x3C],[0x44,0x28,0x10,0x28,0x44],[0x0C,0x50,0x50,0x50,0x3C],
+  [0x44,0x64,0x54,0x4C,0x44],[0x00,0x08,0x36,0x41,0x00],[0x00,0x00,0x7F,0x00,0x00],
+  [0x00,0x41,0x36,0x08,0x00],[0x10,0x08,0x08,0x10,0x08]
+];
+
+// 24×40 large 7-segment digit font (packed 1bpp, 5 segment rows × 3 bytes = 15 bytes/digit)
+var LARGE_DIGITS = [
+  0xFF,0xFF,0xFF, 0xC0,0x00,0x03, 0xC0,0x00,0x03, 0xC0,0x00,0x03, 0xFF,0xFF,0xFF, // 0
+  0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F, // 1
+  0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF, 0xF0,0x00,0x00, 0xFF,0xFF,0xFF, // 2
+  0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF, // 3
+  0xC0,0x00,0x0F, 0xC0,0x00,0x0F, 0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0x00,0x00,0x0F, // 4
+  0xFF,0xFF,0xFF, 0xF0,0x00,0x00, 0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF, // 5
+  0xFF,0xFF,0xFF, 0xF0,0x00,0x00, 0xFF,0xFF,0xFF, 0xF0,0x00,0x0F, 0xFF,0xFF,0xFF, // 6
+  0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F, 0x00,0x00,0x0F, // 7
+  0xFF,0xFF,0xFF, 0xF0,0x00,0x0F, 0xFF,0xFF,0xFF, 0xF0,0x00,0x0F, 0xFF,0xFF,0xFF, // 8
+  0xFF,0xFF,0xFF, 0xF0,0x00,0x0F, 0xFF,0xFF,0xFF, 0x00,0x00,0x0F, 0xFF,0xFF,0xFF  // 9
+];
+
+var LW = 296, LH = 128;
+var BG = '#0c0c0a';
+var FG = '#c8c4b8';
+var canvas = document.getElementById('epaper');
+var ctx = canvas.getContext('2d');
+canvas.style.width  = (LW * 3) + 'px';
+canvas.style.height = (LH * 3) + 'px';
+var zbJoined = true;
+var colonOn = true; // toggled each render for "alive" blink
+var prevTemp = 235; // track previous temp for trend
+
+function gl(ch) { var c = ch.charCodeAt(0); return (c>=0x20&&c<=0x7E)?FONT[c-0x20]:FONT[0]; }
+function px(x,y,on) { if(x<0||x>=LW||y<0||y>=LH)return; ctx.fillStyle=on?FG:BG; ctx.fillRect(x,y,1,1); }
+
+function drawStr(x, y, s) {
+  var cx = x;
+  for (var i = 0; i < s.length; i++) {
+    var g = gl(s[i]);
+    for (var c = 0; c < 5; c++)
+      for (var r = 0; r < 7; r++)
+        if ((g[c] >> r) & 1) px(cx+c, y+r, true);
+    cx += 6;
+  }
+}
+
+function drawScaled(x, y, s, sc) {
+  var cx = x;
+  for (var i = 0; i < s.length; i++) {
+    var g = gl(s[i]);
+    for (var c = 0; c < 5; c++)
+      for (var r = 0; r < 7; r++)
+        if ((g[c] >> r) & 1)
+          for (var sy = 0; sy < sc; sy++)
+            for (var sx = 0; sx < sc; sx++)
+              px(cx+c*sc+sx, y+r*sc+sy, true);
+    cx += 6 * sc;
+  }
+}
+
+function hl(y,x0,x1) { for(var x=x0;x<=x1;x++) px(x,y,true); }
+function vl(x,y0,y1) { for(var y=y0;y<=y1;y++) px(x,y,true); }
+function fr(x,y,w,h) { ctx.fillStyle=FG; ctx.fillRect(x,y,w,h); }
+
+function drawBattery(bx, by, pct) {
+  // Wider battery: 18×9 body + 2px nub = 20px total, 5 segments
+  hl(by,bx,bx+17); hl(by+8,bx,bx+17);
+  vl(bx,by,by+8); vl(bx+17,by,by+8);
+  fr(bx+18, by+2, 2, 5);
+  var segs = pct>80?5:pct>60?4:pct>40?3:pct>20?2:pct>5?1:0;
+  for (var i=0; i<segs; i++) fr(bx+2+i*3+i, by+2, 2, 5);
+}
+
+function drawZigbee(bx, by, joined) {
+  // 11×9 circle with Z inside = joined, circle with X = offline
+  var circ = [
+    [0,0,0,1,1,1,1,1,0,0,0],
+    [0,1,1,0,0,0,0,0,1,1,0],
+    [1,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,1],
+    [0,1,1,0,0,0,0,0,1,1,0],
+    [0,0,0,1,1,1,1,1,0,0,0]
+  ];
+  var zlet = [
+    [0,0,0,0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0],
+    [0,0,0,1,1,1,1,1,0,0,0],
+    [0,0,0,0,0,0,1,0,0,0,0],
+    [0,0,0,0,0,1,0,0,0,0,0],
+    [0,0,0,0,1,0,0,0,0,0,0],
+    [0,0,0,1,1,1,1,1,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0]
+  ];
+  for (var r=0; r<9; r++)
+    for (var c=0; c<11; c++) {
+      if (circ[r][c]) px(bx+c, by+r, true);
+      if (joined && zlet[r][c]) px(bx+c, by+r, true);
+    }
+  if (!joined) {
+    for (var i=1; i<8; i++) { px(bx+1+i,by+i,true); px(bx+9-i,by+i,true); }
+  }
+}
+
+function drawDroplet(x, y) {
+  // 9×9 water droplet icon for humidity
+  var d = [
+    [0,0,0,0,1,0,0,0,0],
+    [0,0,0,1,0,1,0,0,0],
+    [0,0,1,0,0,0,1,0,0],
+    [0,0,1,0,0,0,1,0,0],
+    [0,1,0,0,0,0,0,1,0],
+    [0,1,0,0,0,0,0,1,0],
+    [0,1,0,0,1,0,0,1,0],
+    [0,0,1,0,0,0,1,0,0],
+    [0,0,0,1,1,1,0,0,0]
+  ];
+  for(var r=0;r<9;r++) for(var c=0;c<9;c++) if(d[r][c]) px(x+c,y+r,true);
+}
+
+function drawBarometer(x, y) {
+  // 9×9 atmospheric pressure barometer (dial gauge with needle at 2 o'clock)
+  var d = [
+    [0,0,1,1,1,1,1,0,0],
+    [0,1,0,0,1,0,0,1,0],
+    [1,0,0,0,0,0,1,0,1],
+    [1,0,0,0,0,1,0,0,1],
+    [1,0,0,0,1,0,0,0,1],
+    [1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,1],
+    [0,1,0,0,0,0,0,1,0],
+    [0,0,1,1,1,1,1,0,0]
+  ];
+  for(var r=0;r<9;r++) for(var c=0;c<9;c++) if(d[r][c]) px(x+c,y+r,true);
+}
+
+function drawSun(x, y) {
+  // 9×9 sun icon for lux
+  var d = [
+    [0,0,0,0,1,0,0,0,0],
+    [1,0,0,0,1,0,0,0,1],
+    [0,1,0,1,1,1,0,1,0],
+    [0,0,1,1,1,1,1,0,0],
+    [1,1,1,1,1,1,1,1,1],
+    [0,0,1,1,1,1,1,0,0],
+    [0,1,0,1,1,1,0,1,0],
+    [1,0,0,0,1,0,0,0,1],
+    [0,0,0,0,1,0,0,0,0]
+  ];
+  for(var r=0;r<9;r++) for(var c=0;c<9;c++) if(d[r][c]) px(x+c,y+r,true);
+}
+
+function drawSmallArrow(x, y, up) {
+  // 5×7 mini trend arrow for column values
+  if (up) {
+    px(x+2,y,true);
+    px(x+1,y+1,true); px(x+2,y+1,true); px(x+3,y+1,true);
+    px(x+0,y+2,true); px(x+1,y+2,true); px(x+2,y+2,true); px(x+3,y+2,true); px(x+4,y+2,true);
+    for(var i=3;i<7;i++){px(x+1,y+i,true);px(x+2,y+i,true);px(x+3,y+i,true);}
+  } else {
+    for(var i=0;i<4;i++){px(x+1,y+i,true);px(x+2,y+i,true);px(x+3,y+i,true);}
+    px(x+0,y+4,true);px(x+1,y+4,true);px(x+2,y+4,true);px(x+3,y+4,true);px(x+4,y+4,true);
+    px(x+1,y+5,true);px(x+2,y+5,true);px(x+3,y+5,true);
+    px(x+2,y+6,true);
+  }
+}
+
+function scaledTextWidth(s, sc) {
+  return s.length * 6 * sc;
+}
+
+function drawThickArrow(x, y, h, up) {
+  // 7px wide, h px tall, thick 3px shaft + wide arrowhead
+  if (up) {
+    // Shaft (3px wide)
+    for (var i=5;i<h;i++) { px(x+2,y+i,true); px(x+3,y+i,true); px(x+4,y+i,true); }
+    // Arrowhead
+    px(x+3,y+0,true);
+    px(x+2,y+1,true); px(x+3,y+1,true); px(x+4,y+1,true);
+    px(x+1,y+2,true); px(x+2,y+2,true); px(x+3,y+2,true); px(x+4,y+2,true); px(x+5,y+2,true);
+    px(x+0,y+3,true); px(x+1,y+3,true); px(x+2,y+3,true); px(x+3,y+3,true); px(x+4,y+3,true); px(x+5,y+3,true); px(x+6,y+3,true);
+  } else {
+    // Shaft (3px wide)
+    for (var i=0;i<h-5;i++) { px(x+2,y+i,true); px(x+3,y+i,true); px(x+4,y+i,true); }
+    // Arrowhead at bottom
+    var b = h-1;
+    px(x+3,y+b,true);
+    px(x+2,y+b-1,true); px(x+3,y+b-1,true); px(x+4,y+b-1,true);
+    px(x+1,y+b-2,true); px(x+2,y+b-2,true); px(x+3,y+b-2,true); px(x+4,y+b-2,true); px(x+5,y+b-2,true);
+    px(x+0,y+b-3,true); px(x+1,y+b-3,true); px(x+2,y+b-3,true); px(x+3,y+b-3,true); px(x+4,y+b-3,true); px(x+5,y+b-3,true); px(x+6,y+b-3,true);
+  }
+}
+
+function drawDeg(x, y, s) {
+  var sz = 3*s;
+  for (var i=0;i<sz;i++) { px(x+i,y,true); px(x+i,y+sz-1,true); px(x,y+i,true); px(x+sz-1,y+i,true); }
+  for (var dy=1;dy<sz-1;dy++) for(var dx=1;dx<sz-1;dx++) px(x+dx,y+dy,false);
+}
+
+function drawArrow(x, y, h) {
+  for (var i=0;i<h;i++) px(x+3,y+i,true);
+  px(x+1,y+2,true); px(x+2,y+1,true); px(x+3,y,true); px(x+4,y+1,true); px(x+5,y+2,true);
+}
+
+function drawLargeDigit(x, y, digit) {
+  var base = digit * 15;
+  for (var seg = 0; seg < 5; seg++) {
+    var b = [LARGE_DIGITS[base+seg*3], LARGE_DIGITS[base+seg*3+1], LARGE_DIGITS[base+seg*3+2]];
+    for (var py = 0; py < 8; py++)
+      for (var ppx = 0; ppx < 24; ppx++)
+        px(x+ppx, y+seg*8+py, !!((b[Math.floor(ppx/8)] >> (7-(ppx%8))) & 1));
+  }
+}
+
+function drawLargeText(x, y, s) {
+  var cx = x;
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charCodeAt(i);
+    if (ch >= 48 && ch <= 57) { drawLargeDigit(cx, y, ch-48); cx += 28; }
+    else if (ch == 46) { fr(cx, y+32, 4, 8); cx += 8; }
+    else if (ch == 45) { fr(cx, y+16, 16, 8); cx += 20; }
+    else cx += 16;
+  }
+  return cx;
+}
+
+function largeTextWidth(s) {
+  var w = 0;
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charCodeAt(i);
+    if (ch >= 48 && ch <= 57) w += 28;
+    else if (ch == 46) w += 8;
+    else if (ch == 45) w += 20;
+    else w += 16;
+  }
+  return w;
+}
+
+function drawWeatherIcon(x, y, trend3h) {
+  // Simple 7×7 weather forecast icon based on 3h pressure trend
+  // trend3h: positive = rising (sun), near 0 = stable (cloud), negative = falling (rain)
+  if (trend3h >= 3) {
+    // Sun — clear weather
+    var s = [
+      [0,0,0,1,0,0,0],
+      [1,0,0,1,0,0,1],
+      [0,1,1,1,1,1,0],
+      [1,1,1,1,1,1,1],
+      [0,1,1,1,1,1,0],
+      [1,0,0,1,0,0,1],
+      [0,0,0,1,0,0,0]
+    ];
+    for(var r=0;r<7;r++) for(var c=0;c<7;c++) if(s[r][c]) px(x+c,y+r,true);
+  } else if (trend3h >= -2) {
+    // Cloud — stable
+    var s = [
+      [0,0,1,1,0,0,0],
+      [0,1,0,0,1,0,0],
+      [1,0,0,0,0,1,0],
+      [1,0,0,0,0,1,1],
+      [1,1,1,1,1,1,1],
+      [0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0]
+    ];
+    for(var r=0;r<7;r++) for(var c=0;c<7;c++) if(s[r][c]) px(x+c,y+r,true);
+  } else {
+    // Rain — falling fast
+    var s = [
+      [0,0,1,1,0,0,0],
+      [0,1,0,0,1,0,0],
+      [1,0,0,0,0,1,1],
+      [1,1,1,1,1,1,1],
+      [0,1,0,0,1,0,0],
+      [0,0,1,0,0,1,0],
+      [0,1,0,0,1,0,0]
+    ];
+    for(var r=0;r<7;r++) for(var c=0;c<7;c++) if(s[r][c]) px(x+c,y+r,true);
+  }
+}
+
+function comfortLabel(humCentipct) {
+  var h = humCentipct / 10;
+  if (h < 30) return 'DRY';
+  if (h > 60) return 'WET';
+  return 'OK';
+}
+
+function dhl(y, x0, x1) { hl(y,x0,x1); hl(y+2,x0,x1); } // double-line separator
+
+function drawLine(x0,y0,x1,y1) {
+  var dx=Math.abs(x1-x0), dy=-Math.abs(y1-y0);
+  var sx=x0<x1?1:-1, sy=y0<y1?1:-1, err=dx+dy;
+  while(true) {
+    px(x0,y0,true);
+    if(x0===x1&&y0===y1) break;
+    var e2=2*err;
+    if(e2>=dy){err+=dy;x0+=sx;}
+    if(e2<=dx){err+=dx;y0+=sy;}
+  }
+}
+
+function render() {
+  var temp  = parseInt(document.getElementById('temp').value);
+  var hum   = parseInt(document.getElementById('hum').value);
+  var press = parseInt(document.getElementById('press').value);
+  var lux   = parseInt(document.getElementById('lux').value);
+  var bat   = parseInt(document.getElementById('bat').value);
+  var batMv = 2000 + bat * 12;
+
+  document.getElementById('tempVal').textContent  = (temp/10).toFixed(1);
+  document.getElementById('humVal').textContent   = (hum/10).toFixed(1);
+  document.getElementById('pressVal').textContent = press;
+  document.getElementById('luxVal').textContent   = lux;
+  document.getElementById('batVal').textContent   = bat;
+
+  // Toggle colon blink each render (e-paper "alive" indicator)
+  colonOn = !colonOn;
+
+  // Temperature trend: compare with previous
+  var tempUp = temp >= prevTemp;
+  prevTemp = temp;
+
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, LW, LH);
+
+  // ── Header ──────────────────────────────────
+  drawBattery(4, 2, bat);
+
+  // Battery LOW indicator when <10%
+  if (bat < 10) {
+    drawStr(26, 3, 'LOW');
+  } else {
+    var vStr = Math.floor(batMv/1000)+'.'+String(Math.floor((batMv%1000)/10)).padStart(2,'0')+'V '+bat+'%';
+    drawStr(26, 3, vStr);
+  }
+
+  // Date/time with colon blink + Zigbee icon
+  var now = new Date();
+  var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var sep = colonOn ? ':' : ' ';
+  var dtStr = now.getDate() + ' ' + months[now.getMonth()] + ' '
+    + String(now.getHours()).padStart(2,'0') + sep
+    + String(now.getMinutes()).padStart(2,'0');
+  drawZigbee(LW-13, 2, zbJoined);
+  drawStr(LW - 13 - 4 - (dtStr.length*6), 3, dtStr);
+  dhl(13, 0, LW-1); // double-line separator
+
+  // ── Hero temperature ────────────────────────
+  var neg = temp < 0;
+  var absT = Math.abs(temp);
+  var tStr = (neg?'-':'') + Math.floor(absT/10) + '.' + (absT%10);
+  var largeW = largeTextWidth(tStr);
+  var degW = 9;
+  var cW = 18;
+  var totalW = 7 + 6 + largeW + degW + 2 + cW;
+  var tx = Math.floor((LW - totalW) / 2);
+  var heroY = 17; // shifted down 2px for double-line
+
+  // Trend arrow linked to real data
+  drawThickArrow(tx, heroY + 8, 24, tempUp);
+  var endX = drawLargeText(tx + 7 + 6, heroY, tStr);
+  drawDeg(endX, heroY, 3);
+  drawScaled(endX + degW + 2, heroY, 'C', 3);
+
+  dhl(59, 0, LW-1); // double-line separator
+
+  // ── Three columns ───────────────────────────
+  var cw = Math.floor(LW / 3);
+  vl(cw, 60, 88);
+  vl(cw*2, 60, 88);
+
+  // Generate pressure history for 3h trend calculation
+  var phist = [];
+  var pBase = press - 8;
+  for (var i = 0; i < 24; i++) {
+    phist.push(pBase + Math.round(Math.sin(i*0.6)*6 + Math.sin(i*0.15)*4 + Math.random()*2));
+  }
+  phist[phist.length-1] = press;
+  // 3h pressure trend
+  var p3hAgo = phist[phist.length - 4];
+  var pTrend3h = press - p3hAgo;
+
+  // Column 1: Humidity
+  var c1Mid = Math.floor(cw / 2);
+  var h1LabelW = 9 + 2 + 'Humidity'.length * 6;
+  var h1LabelX = c1Mid - Math.floor(h1LabelW / 2);
+  drawDroplet(h1LabelX, 63);
+  drawStr(h1LabelX + 11, 63, 'Humidity');
+  var hStr = Math.floor(hum/10) + '.' + (hum%10) + '%';
+  var hValW = scaledTextWidth(hStr, 2) + 7;
+  var hValX = c1Mid - Math.floor(hValW / 2);
+  drawScaled(hValX, 73, hStr, 2);
+  drawSmallArrow(hValX + scaledTextWidth(hStr, 2) + 2, 76, hum >= 452);
+  // Comfort zone label
+  var comfort = comfortLabel(hum);
+  drawStr(c1Mid - Math.floor(comfort.length*6/2), 88, comfort);
+
+  // Column 2: Pressure + 3h delta
+  var c2Mid = cw + Math.floor(cw / 2);
+  var p1LabelW = 9 + 2 + 'Press hPa'.length * 6;
+  var p1LabelX = c2Mid - Math.floor(p1LabelW / 2);
+  drawBarometer(p1LabelX, 63);
+  drawStr(p1LabelX + 11, 63, 'Press hPa');
+  var pStr = ''+press;
+  var pValW = scaledTextWidth(pStr, 2) + 7;
+  var pValX = c2Mid - Math.floor(pValW / 2);
+  drawScaled(pValX, 73, pStr, 2);
+  drawSmallArrow(pValX + scaledTextWidth(pStr, 2) + 2, 76, pTrend3h >= 0);
+  // 3h trend delta text
+  var deltaStr = (pTrend3h >= 0 ? '+' : '') + pTrend3h;
+  drawStr(c2Mid - Math.floor(deltaStr.length*6/2), 88, deltaStr);
+
+  // Column 3: Light
+  var c3Mid = cw * 2 + Math.floor(cw / 2);
+  var l1LabelW = 9 + 2 + 'Light lux'.length * 6;
+  var l1LabelX = c3Mid - Math.floor(l1LabelW / 2);
+  drawSun(l1LabelX, 63);
+  drawStr(l1LabelX + 11, 63, 'Light lux');
+  var lStr = ''+lux;
+  var lValW = scaledTextWidth(lStr, 2) + 7;
+  var lValX = c3Mid - Math.floor(lValW / 2);
+  drawScaled(lValX, 73, lStr, 2);
+  drawSmallArrow(lValX + scaledTextWidth(lStr, 2) + 2, 76, true);
+
+  dhl(96, 0, LW-1); // double-line separator
+
+  // ── Pressure bar chart ──────────────────────
+  // Centered label + weather forecast icon
+  var chartLabel = 'Pressure 24h';
+  var labelW = chartLabel.length * 6;
+  drawStr(Math.floor((LW - labelW - 10) / 2), 100, chartLabel);
+  // Weather forecast icon next to label
+  drawWeatherIcon(Math.floor((LW + labelW - 10) / 2) + 4, 100, pTrend3h);
+
+  var gx=4, gy=109, gw=LW-8, gh=18;
+
+  // Auto-scale
+  var plo = Math.min.apply(null, phist), phi = Math.max.apply(null, phist);
+  if (phi <= plo) phi = plo + 1;
+  var prange = phi - plo;
+
+  // Min/max labels on right
+  drawStr(LW - 6*(''+phi).length - 4, 100, ''+phi);
+  drawStr(LW - 6*(''+plo).length - 4, 120, ''+plo);
+
+  // Left-side tick marks (top, mid, bottom)
+  px(gx-1, gy, true); px(gx-2, gy, true);
+  px(gx-1, gy+Math.floor(gh/2), true); px(gx-2, gy+Math.floor(gh/2), true);
+  px(gx-1, gy+gh-1, true); px(gx-2, gy+gh-1, true);
+
+  // Bars
+  var chartW = gw - 30;
+  var barTotal = Math.floor(chartW / phist.length);
+  var barW = Math.max(barTotal - 1, 1);
+  for (var i = 0; i < phist.length; i++) {
+    var bx2 = gx + i * barTotal;
+    var val = Math.min(Math.max(phist[i], plo), phi);
+    var barH = 1 + Math.round((val - plo) / prange * (gh - 2));
+    var by3 = gy + gh - barH;
+    fr(bx2, by3, barW, barH);
+  }
+
+  // Texture
+  var d = ctx.getImageData(0, 0, LW, LH);
+  var p = d.data;
+  for (var i=0; i<p.length; i+=4) {
+    var n = (Math.random()-0.5)*8;
+    p[i]=Math.max(0,Math.min(255,p[i]+n));
+    p[i+1]=Math.max(0,Math.min(255,p[i+1]+n));
+    p[i+2]=Math.max(0,Math.min(255,p[i+2]+n));
+  }
+  ctx.putImageData(d, 0, 0);
+}
+
+function toggleZb() {
+  zbJoined = !zbJoined;
+  var b = document.getElementById('zbToggle');
+  b.textContent = zbJoined ? 'Joined' : 'Offline';
+  b.classList.toggle('active', zbJoined);
+  render();
+}
+
+['temp','hum','press','lux','bat'].forEach(function(id) {
+  document.getElementById(id).addEventListener('input', render);
+});
+
+render();
+</script>
+</body>
+</html>

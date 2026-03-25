@@ -927,7 +927,7 @@ dependencies = [
 [[package]]
 name = "zigbee-aps"
 version = "0.1.0"
-source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#02cc0b2c31b7e0309b9b08fd7d6d287fad179bd6"
+source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#668c70bf402d03a87ffbbb1ecfea550a6d977609"
 dependencies = [
  "heapless 0.9.2",
  "log",
@@ -939,7 +939,7 @@ dependencies = [
 [[package]]
 name = "zigbee-bdb"
 version = "0.1.0"
-source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#02cc0b2c31b7e0309b9b08fd7d6d287fad179bd6"
+source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#668c70bf402d03a87ffbbb1ecfea550a6d977609"
 dependencies = [
  "heapless 0.9.2",
  "log",
@@ -953,7 +953,7 @@ dependencies = [
 [[package]]
 name = "zigbee-mac"
 version = "0.1.0"
-source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#02cc0b2c31b7e0309b9b08fd7d6d287fad179bd6"
+source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#668c70bf402d03a87ffbbb1ecfea550a6d977609"
 dependencies = [
  "embassy-futures",
  "embassy-nrf",
@@ -967,7 +967,7 @@ dependencies = [
 [[package]]
 name = "zigbee-nwk"
 version = "0.1.0"
-source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#02cc0b2c31b7e0309b9b08fd7d6d287fad179bd6"
+source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#668c70bf402d03a87ffbbb1ecfea550a6d977609"
 dependencies = [
  "aes",
  "ccm",
@@ -980,7 +980,7 @@ dependencies = [
 [[package]]
 name = "zigbee-runtime"
 version = "0.1.0"
-source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#02cc0b2c31b7e0309b9b08fd7d6d287fad179bd6"
+source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#668c70bf402d03a87ffbbb1ecfea550a6d977609"
 dependencies = [
  "heapless 0.9.2",
  "log",
@@ -996,12 +996,12 @@ dependencies = [
 [[package]]
 name = "zigbee-types"
 version = "0.1.0"
-source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#02cc0b2c31b7e0309b9b08fd7d6d287fad179bd6"
+source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#668c70bf402d03a87ffbbb1ecfea550a6d977609"
 
 [[package]]
 name = "zigbee-zcl"
 version = "0.1.0"
-source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#02cc0b2c31b7e0309b9b08fd7d6d287fad179bd6"
+source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#668c70bf402d03a87ffbbb1ecfea550a6d977609"
 dependencies = [
  "heapless 0.9.2",
  "log",
@@ -1011,7 +1011,7 @@ dependencies = [
 [[package]]
 name = "zigbee-zdo"
 version = "0.1.0"
-source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#02cc0b2c31b7e0309b9b08fd7d6d287fad179bd6"
+source = "git+https://github.com/faronov/zigbee-rs.git?branch=master#668c70bf402d03a87ffbbb1ecfea550a6d977609"
 dependencies = [
  "heapless 0.9.2",
  "log",

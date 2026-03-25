@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Efekta Bitmap Sprite Mockup — 296×128</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
+  :root { --bg:#18181b; --card:#222226; --border:#333; --dim:#777; --accent:#c8f042; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:#ddd; font-family:'JetBrains Mono',monospace; display:flex; flex-direction:column; align-items:center; min-height:100vh; padding:32px; }
+  h1 { font-size:18px; color:var(--accent); margin-bottom:4px; }
+  .sub { font-size:11px; color:var(--dim); margin-bottom:24px; }
+
+  .device-frame {
+    background:#1a1a1a;
+    border:3px solid #333;
+    border-radius:14px;
+    padding:14px 18px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
+    margin-bottom:24px;
+  }
+
+  #display {
+    image-rendering:pixelated; image-rendering:crisp-edges;
+    border:1px solid #444;
+  }
+
+  .controls {
+    display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px 24px;
+    background:var(--card); border:1px solid var(--border); border-radius:8px;
+    padding:20px 24px; width:700px;
+  }
+  .ctrl { display:flex; flex-direction:column; gap:4px; }
+  .ctrl label { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
+  .ctrl input[type=range] { accent-color:var(--accent); width:100%; }
+  .ctrl .val { font-size:13px; color:var(--accent); text-align:right; }
+
+  .toggles { display:flex; gap:12px; margin-top:12px; grid-column:1/-1; }
+  .tbtn {
+    font-family:inherit; font-size:11px; padding:5px 12px;
+    border:1px solid var(--border); background:var(--card); color:#aaa;
+    border-radius:4px; cursor:pointer; transition:all 0.15s;
+  }
+  .tbtn:hover { border-color:var(--accent); }
+  .tbtn.on { background:var(--accent); color:#111; border-color:var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>◩ Efekta Sprite-Based Mockup</h1>
+<div class="sub">296×128 landscape · Real bitmap sprites from smartboxchannel repos · 2× zoom</div>
+
+<div class="device-frame">
+  <canvas id="display" width="592" height="256"></canvas>
+</div>
+
+<div class="controls">
+  <div class="ctrl">
+    <label>Temperature</label>
+    <input type="range" id="sTemp" min="-200" max="500" value="259">
+    <div class="val" id="vTemp">25.9°C</div>
+  </div>
+  <div class="ctrl">
+    <label>Pressure</label>
+    <input type="range" id="sPress" min="900" max="1100" value="998">
+    <div class="val" id="vPress">998 hPa</div>
+  </div>
+  <div class="ctrl">
+    <label>Humidity</label>
+    <input type="range" id="sHum" min="0" max="999" value="449">
+    <div class="val" id="vHum">44.9%</div>
+  </div>
+  <div class="ctrl">
+    <label>Light (lux)</label>
+    <input type="range" id="sLux" min="0" max="5000" value="1250">
+    <div class="val" id="vLux">1250</div>
+  </div>
+  <div class="ctrl">
+    <label>Battery %</label>
+    <input type="range" id="sBat" min="0" max="100" value="76">
+    <div class="val" id="vBat">76%</div>
+  </div>
+  <div class="ctrl">
+    <label>Signal %</label>
+    <input type="range" id="sSig" min="0" max="100" value="80">
+    <div class="val" id="vSig">80%</div>
+  </div>
+  <div class="toggles">
+    <button class="tbtn on" id="bJoin" onclick="this.classList.toggle('on');draw()">Zigbee Joined</button>
+    <button class="tbtn on" id="bInv" onclick="this.classList.toggle('on');draw()">Inverted (black bg)</button>
+    <button class="tbtn" id="bTrend" onclick="this.classList.toggle('on');draw()">Trend ↓ (else ↑)</button>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  BITMAP SPRITE DATA (extracted from smartboxchannel)
+// ═══════════════════════════════════════════════════════
+
+function H(s){return s.trim().split(/[\s,]+/).filter(x=>x).map(x=>parseInt(x,16));}
+
+// Battery 29×16 (horizontal, terminal nub on right, segmented fill)
+const BAT = [
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 3F FC 00 00 00 00'), // 0%
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 2F F4 2F F4 20 04 3F FC 00 00 00 00'), // 10%
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 2F F4 2F F4 2F F4 2F F4 20 04 3F FC 00 00 00 00'), // 24%
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 3F FC 00 00 00 00'), // 37%
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 3F FC 00 00 00 00'), // 50%
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 20 04 20 04 20 04 20 04 20 04 20 04 20 04 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 3F FC 00 00 00 00'), // 64%
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 20 04 20 04 20 04 20 04 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 3F FC 00 00 00 00'), // 76%
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 20 04 20 04 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 3F FC 00 00 00 00'), // 88%
+  H('00 00 00 00 07 E0 0F F0 3F FC 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 2F F4 2F F4 2F F4 2F F4 20 04 3F FC 00 00 00 00'), // 100%
+];
+const BAT_W=29, BAT_H=16;
+const BAT_THRESH=[0,10,24,37,50,64,76,88,100]; // index thresholds
+
+// Signal 29×16 (stacked bars, antenna at bottom)
+const SIG = [
+  H('00 00 00 00 3F FC 20 04 20 04 3F FC 00 00 0F FC 08 04 08 04 0F FC 00 00 03 FC 02 04 02 04 03 FC 00 00 00 FC 00 84 00 84 00 FC 21 00 12 3C 0C 24 0C 24 12 3C 21 00 00 00 00 00'), // 0 (X)
+  H('00 00 00 00 3F FC 20 04 20 04 3F FC 00 00 0F FC 08 04 08 04 0F FC 00 00 03 FC 02 04 02 04 03 FC 00 00 00 FC 00 84 00 84 00 FC 00 00 00 3C 00 3C 00 3C 00 3C 00 00 00 00 00 00'), // 20
+  H('00 00 00 00 3F FC 20 04 20 04 3F FC 00 00 0F FC 08 04 08 04 0F FC 00 00 03 FC 02 04 02 04 03 FC 00 00 00 FC 00 FC 00 FC 00 FC 00 00 00 3C 00 3C 00 3C 00 3C 00 00 00 00 00 00'), // 40
+  H('00 00 00 00 3F FC 20 04 20 04 3F FC 00 00 0F FC 08 04 08 04 0F FC 00 00 03 FC 03 FC 03 FC 03 FC 00 00 00 FC 00 FC 00 FC 00 FC 00 00 00 3C 00 3C 00 3C 00 3C 00 00 00 00 00 00'), // 60
+  H('00 00 00 00 3F FC 20 04 20 04 3F FC 00 00 0F FC 0F FC 0F FC 0F FC 00 00 03 FC 03 FC 03 FC 03 FC 00 00 00 FC 00 FC 00 FC 00 FC 00 00 00 3C 00 3C 00 3C 00 3C 00 00 00 00 00 00'), // 80
+  H('00 00 00 00 3F FC 3F FC 3F FC 3F FC 00 00 0F FC 0F FC 0F FC 0F FC 00 00 03 FC 03 FC 03 FC 03 FC 00 00 00 FC 00 FC 00 FC 00 FC 00 00 00 3C 00 3C 00 3C 00 3C 00 00 00 00 00 00'), // 100
+];
+const SIG_W=29, SIG_H=16;
+const SIG_THRESH=[0,20,40,60,80,100];
+
+// Small digits CD0-CD9 (16×9)
+const CD = [
+  H('00 00 3F 7E 20 02 20 02 20 02 20 02 20 02 3F 7E 00 00'), // 0
+  H('00 00 3F 7E 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), // 1
+  H('00 00 3F 80 20 82 20 82 20 82 20 82 20 82 20 FE 00 00'), // 2
+  H('00 00 3F FE 20 82 20 82 20 82 20 82 20 82 20 02 00 00'), // 3
+  H('00 00 3F FE 00 80 00 80 00 80 00 80 00 80 1F 80 00 00'), // 4
+  H('00 00 00 FE 20 82 20 82 20 82 20 82 20 82 3F 82 00 00'), // 5
+  H('00 00 00 FE 20 82 20 82 20 82 20 82 20 82 3F FE 00 00'), // 6
+  H('00 00 3F 7E 20 00 20 00 20 00 20 00 20 00 3F 00 00 00'), // 7
+  H('00 00 3F FE 20 82 20 82 20 82 20 82 20 82 3F FE 00 00'), // 8
+  H('00 00 3F FE 20 82 20 82 20 82 20 82 20 82 3F 82 00 00'), // 9
+];
+const CD_W=16, CD_H=9;
+
+// CDP — decimal point (5×16 → actually 5px? data=10 bytes = 5 rows × 2 bytes → 16×5)
+const CDP = H('00 00 00 00 00 04 00 00 00 00');
+const CDP_W=16, CDP_H=5;
+
+// CDPR — "hPa" label (16×9)
+const CDPR = H('00 1E 38 12 1E 12 07 1E 00 00 3C 70 24 3C 24 0E 3C 00');
+const CDPR_W=16, CDPR_H=9;
+
+// HUMICON (16×17 — droplet)
+const HUMICON = H('00 00 00 00 3C 00 00 FF 00 03 FF 00 0F FF 80 3F FF 80 7F FF 80 FF FF 80 FF FF 80 7F FF 80 3E 7D 80 0F 9B 80 03 E7 00 00 FF 00 00 3C 00 00 00 00');
+const HUMICON_W=16, HUMICON_H=17;
+
+// PRESICON (17×17 — barometer)
+const PRESICON = H('FF FF 80 88 88 80 88 88 80 80 80 80 00 0C 00 0F 8E 00 7F FF 00 70 7F 00 00 0E 00 00 0C 00 00 00 00 00 0C 00 0F 8E 00 7F FF 00 70 7F 00 00 0E 00 00 0C 00');
+const PRESICON_W=17, PRESICON_H=17;
+
+// NNC — °C label (20×16, large)
+const NNC = H('78 1E F8 1F F8 1F C0 03 C0 03 C0 03 C0 03 FF FF FF FF 7F FE 00 00 00 00 00 00 7E 00 FF 00 C3 00 C3 00 C3 00 FF 00 7E 00');
+const NNC_W=20, NNC_H=16;
+
+// NTC — °C label (20×16, smaller/thinner)
+const NTC = H('00 00 00 00 40 04 40 04 40 04 40 04 40 04 7E FC 00 00 00 00 00 00 7F 00 41 00 41 00 41 00 41 00 41 00 7F 00 00 00 00 00');
+const NTC_W=20, NTC_H=16;
+
+// LUX icon/text (27×16)
+const LUX_ICON = H('00 00 38 0E 1E 3C 07 70 00 00 07 70 1E 3C 38 0E 00 00 00 00 3F 7E 00 02 00 02 00 02 00 02 00 02 3F 7E 00 00 00 00 00 02 00 02 00 02 00 02 00 02 00 02 3F 7E 00 00');
+const LUX_W=27, LUX_H=16;
+
+// Trend arrows (12×12)
+const ARROW_UP = H('00 00 04 00 0C 00 1C 00 3F 68 7F 68 7F 68 3F 68 1C 00 0C 00 04 00 00 00');
+const ARROW_DN = H('00 00 00 80 00 C0 00 E0 5B F0 5B F8 5B F8 5B F0 00 E0 00 C0 00 80 00 00');
+const ARR_W=12, ARR_H=12;
+
+// PRHUM — % symbol (10×9)
+const PRHUM = H('00 00 00 00 03 80 C2 80 33 80 E6 00 A1 80 E0 00 00 00 00 00');
+const PRHUM_W=10, PRHUM_H=9;
+
+// ═══════════════════════════════════════════════════════
+//  24×40 LARGE 7-SEGMENT DIGITS (from efekta firmware)
+// ═══════════════════════════════════════════════════════
+const LARGE_DIGITS = [
+  [0xFF,0xFF,0xFF, 0xC0,0x00,0x03, 0xC0,0x00,0x03, 0xC0,0x00,0x03, 0xFF,0xFF,0xFF], // 0
+  [0x00,0x00,0x00, 0x00,0x00,0x03, 0x00,0x00,0x03, 0x00,0x00,0x03, 0x00,0x00,0x00], // 1
+  [0xFF,0xFF,0xFF, 0x00,0x00,0x03, 0xFF,0xFF,0xFF, 0xC0,0x00,0x00, 0xFF,0xFF,0xFF], // 2
+  [0xFF,0xFF,0xFF, 0x00,0x00,0x03, 0xFF,0xFF,0xFF, 0x00,0x00,0x03, 0xFF,0xFF,0xFF], // 3
+  [0x00,0x00,0x00, 0xC0,0x00,0x03, 0xFF,0xFF,0xFF, 0x00,0x00,0x03, 0x00,0x00,0x00], // 4
+  [0xFF,0xFF,0xFF, 0xC0,0x00,0x00, 0xFF,0xFF,0xFF, 0x00,0x00,0x03, 0xFF,0xFF,0xFF], // 5
+  [0xFF,0xFF,0xFF, 0xC0,0x00,0x00, 0xFF,0xFF,0xFF, 0xC0,0x00,0x03, 0xFF,0xFF,0xFF], // 6
+  [0xFF,0xFF,0xFF, 0x00,0x00,0x03, 0x00,0x00,0x03, 0x00,0x00,0x03, 0x00,0x00,0x00], // 7 — fixed
+  [0xFF,0xFF,0xFF, 0xC0,0x00,0x03, 0xFF,0xFF,0xFF, 0xC0,0x00,0x03, 0xFF,0xFF,0xFF], // 8
+  [0xFF,0xFF,0xFF, 0xC0,0x00,0x03, 0xFF,0xFF,0xFF, 0x00,0x00,0x03, 0xFF,0xFF,0xFF], // 9
+];
+const LDW=24, LDH=40, LDGAP=4;
+
+// ═══════════════════════════════════════════════════════
+//  RENDERING ENGINE
+// ═══════════════════════════════════════════════════════
+
+const W=296, HH=128, SCALE=2;
+const canvas = document.getElementById('display');
+const ctx = canvas.getContext('2d');
+let FG, BG;
+
+function px(x,y,c) {
+  ctx.fillStyle = c ? FG : BG;
+  ctx.fillRect(x*SCALE, y*SCALE, SCALE, SCALE);
+}
+
+// Blit with 90° CW rotation: source (col,row) → display (bh-1-row, col)
+// So a sprite stored as WxH portrait becomes HxW landscape on screen.
+// dx,dy are top-left of the ROTATED output (which is bh wide × bw tall).
+function blit(data, bw, bh, dx, dy) {
+  const bpr = Math.ceil(bw/8);
+  for (let r=0; r<bh; r++) {
+    for (let c=0; c<bw; c++) {
+      const bi = r*bpr + Math.floor(c/8);
+      const bit = (data[bi]>>(7-(c%8)))&1;
+      // 90° CW: display_x = bh-1-r, display_y = c
+      px(dx + (bh-1-r), dy + c, bit);
+    }
+  }
+}
+
+function hline(y,x1,x2) { for(let x=x1;x<=x2;x++) px(x,y,1); }
+function vline(x,y1,y2) { for(let y=y1;y<=y2;y++) px(x,y,1); }
+function fr(x,y,w,h) { for(let dy=0;dy<h;dy++) for(let dx=0;dx<w;dx++) px(x+dx,y+dy,1); }
+
+// Large 7-seg digit
+function drawLD(x, y, d) {
+  const seg = LARGE_DIGITS[d];
+  for (let s=0; s<5; s++) {
+    const b0=seg[s*3], b1=seg[s*3+1], b2=seg[s*3+2];
+    for (let row=0; row<8; row++) {
+      for (let col=0; col<24; col++) {
+        const byteIdx = Math.floor(col/8);
+        const bitIdx = 7-(col%8);
+        const val = ([b0,b1,b2][byteIdx]>>bitIdx)&1;
+        px(x+col, y+s*8+row, val);
+      }
+    }
+  }
+}
+
+// Large text (digits + dot + minus)
+function drawLargeText(x, y, s) {
+  let cx=x;
+  for (const ch of s) {
+    if (ch>='0' && ch<='9') { drawLD(cx,y,parseInt(ch)); cx+=LDW+LDGAP; }
+    else if (ch==='.') {
+      for(let dy=0;dy<LDH-8;dy++) for(let dx=0;dx<4;dx++) px(cx+dx,y+dy,0);
+      for(let dy=LDH-8;dy<LDH;dy++) for(let dx=0;dx<4;dx++) px(cx+dx,y+dy,1);
+      cx+=4+LDGAP;
+    }
+    else if (ch==='-') {
+      for(let dy=0;dy<16;dy++) for(let dx=0;dx<16;dx++) px(cx+dx,y+dy,0);
+      for(let dy=16;dy<24;dy++) for(let dx=0;dx<16;dx++) px(cx+dx,y+dy,1);
+      for(let dy=24;dy<40;dy++) for(let dx=0;dx<16;dx++) px(cx+dx,y+dy,0);
+      cx+=16+LDGAP;
+    }
+    else { cx+=12+LDGAP; }
+  }
+  return cx;
+}
+
+function largeTextW(s) {
+  let w=0;
+  for (const ch of s) {
+    if (ch>='0'&&ch<='9') w+=LDW+LDGAP;
+    else if (ch==='.') w+=4+LDGAP;
+    else if (ch==='-') w+=16+LDGAP;
+    else w+=12+LDGAP;
+  }
+  return w;
+}
+
+// CD small digit text — after rotation CD is 9w × 16h on screen
+function drawCDText(x, y, s) {
+  let cx=x;
+  for (const ch of s) {
+    if (ch>='0'&&ch<='9') { blit(CD[parseInt(ch)],CD_W,CD_H,cx,y); cx+=CD_H+1; } // rotated: screen_w = CD_H
+    else if (ch==='.') {
+      // Small dot at bottom
+      for(let dy=0;dy<3;dy++) for(let dx=0;dx<3;dx++) px(cx+dx,y+CD_W-3+dy,1);
+      cx+=5;
+    }
+    else { cx+=5; }
+  }
+  return cx;
+}
+
+function batIdx(pct) {
+  for (let i=BAT_THRESH.length-1;i>=0;i--) if (pct>=BAT_THRESH[i]) return i;
+  return 0;
+}
+function sigIdx(pct) {
+  for (let i=SIG_THRESH.length-1;i>=0;i--) if (pct>=SIG_THRESH[i]) return i;
+  return 0;
+}
+
+// ═══════════════════════════════════════════════════════
+//  DRAW FULL DISPLAY
+// ═══════════════════════════════════════════════════════
+
+function draw() {
+  const inv = document.getElementById('bInv').classList.contains('on');
+  FG = inv ? '#e0ddd5' : '#1a1a1a';
+  BG = inv ? '#1a1a1a' : '#e8e4d8';
+
+  // Clear
+  ctx.fillStyle = BG;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  const temp = parseInt(document.getElementById('sTemp').value);
+  const press = parseInt(document.getElementById('sPress').value);
+  const hum = parseInt(document.getElementById('sHum').value);
+  const lux = parseInt(document.getElementById('sLux').value);
+  const bat = parseInt(document.getElementById('sBat').value);
+  const sig = parseInt(document.getElementById('sSig').value);
+  const joined = document.getElementById('bJoin').classList.contains('on');
+  const trendDown = document.getElementById('bTrend').classList.contains('on');
+
+  // ── Header ──────────────────────────────────
+  // After 90° CW rotation: BAT 29×16 → 16w × 29h on screen
+  // SIG 29×16 → 16w × 29h on screen
+  blit(BAT[batIdx(bat)], BAT_W, BAT_H, 4, 0);  // 16w×29h — tall, left side
+
+  // Signal icon on right side of header
+  blit(SIG[joined ? sigIdx(sig) : 0], SIG_W, SIG_H, W-BAT_H-2, 0); // 16w×29h
+
+  // Date/time in header center area
+  var now = new Date();
+  var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var dtStr = now.getDate()+' '+months[now.getMonth()]+' '+
+    String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  drawSmallStr(W-BAT_H-6-(dtStr.length*6), 5, dtStr);
+
+  // Voltage next to battery (battery is 16px wide after rotation)
+  var vStr = Math.floor(bat)+'%';
+  drawSmallStr(4+BAT_H+4, 5, vStr);
+
+  hline(17, 0, W-1);
+
+  // ── Hero temperature (y=20..59) ─────────────
+  var neg = temp<0;
+  var absT = Math.abs(temp);
+  var tStr = (neg?'-':'') + Math.floor(absT/10) + '.' + (absT%10);
+  var tw = largeTextW(tStr);
+  var heroX = 8;
+  var heroY = 20;
+
+  // Trend arrow (bitmap) — rotated: 12×12 stays 12×12 (square)
+  blit(trendDown ? ARROW_DN : ARROW_UP, ARR_W, ARR_H, heroX, heroY+14);
+  heroX += ARR_H + 4;  // rotated width = ARR_H
+
+  drawLargeText(heroX, heroY, tStr);
+  var endX = heroX + tw;
+
+  // °C label (bitmap) — NNC 20×16 → rotated 16w×20h
+  blit(NNC, NNC_W, NNC_H, endX+4, heroY);
+
+  hline(62, 0, W-1);
+
+  // ── Three-column bottom section (y=64..100) ──
+  var colW = Math.floor(W/3);
+
+  vline(colW, 63, 100);
+  vline(colW*2, 63, 100);
+
+  // Column 1: Temperature (small) — CD digits rotated: 9w×16h each on screen
+  var c1x = 6;
+  var tSmall = Math.floor(absT/10)+'.'+absT%10;
+  var c1end = drawCDText(c1x, 66, tSmall);
+  blit(trendDown ? ARROW_DN : ARROW_UP, ARR_W, ARR_H, c1end+2, 68);
+  // °C small — NTC 20×16 → rotated 16w×20h
+  blit(NTC, NTC_W, NTC_H, c1x, 84);
+
+  // Column 2: Pressure — CD digits
+  var c2x = colW + 6;
+  var pStr = ''+press;
+  var c2end = drawCDText(c2x, 66, pStr);
+  blit(trendDown ? ARROW_DN : ARROW_UP, ARR_W, ARR_H, c2end+2, 68);
+  // hPa label — CDPR 16×9 → rotated 9w×16h
+  blit(CDPR, CDPR_W, CDPR_H, c2x+4, 84);
+  // Pressure icon — PRESICON 17×17 → rotated 17w×17h (square)
+  blit(PRESICON, PRESICON_W, PRESICON_H, c2x + 18, 84);
+
+  // Column 3: Humidity — CD digits
+  var c3x = colW*2 + 6;
+  var hStr = Math.floor(hum/10)+'.'+hum%10;
+  var c3end = drawCDText(c3x, 66, hStr);
+  // % symbol — PRHUM 10×9 → rotated 9w×10h
+  blit(PRHUM, PRHUM_W, PRHUM_H, c3end+2, 70);
+  // Humidity droplet — HUMICON 16×17 → rotated 17w×16h
+  blit(HUMICON, HUMICON_W, HUMICON_H, c3x, 84);
+
+  hline(102, 0, W-1);
+
+  // ── Footer: Lux + Pressure bar chart ────────
+  // LUX icon — 27×16 → rotated 16w×27h — too tall for footer!
+  // Use just the text instead
+  blit(LUX_ICON, LUX_W, LUX_H, 4, 104);
+  drawSmallStr(4+LUX_H+4, 108, ''+lux);
+
+  // Pressure 24h bar chart
+  var gx=90, gy=104, gw=W-gx-4, gh=22;
+  drawSmallStr(gx, 104, 'Pressure 24h');
+
+  // Generate fake pressure history bars
+  var pBase = press - 8;
+  var phist = [];
+  for (var i=0; i<24; i++) phist.push(pBase + Math.floor(Math.sin(i*0.7)*6 + Math.cos(i*0.3)*4 + 8));
+  var pMin=Math.min(...phist), pMax=Math.max(...phist);
+  if(pMax<=pMin) pMax=pMin+1;
+  var bw2 = Math.floor(gw/24);
+  for (var i=0;i<24;i++) {
+    var bh2 = 1+Math.floor((phist[i]-pMin)/(pMax-pMin)*(gh-2));
+    var bx2 = gx+i*bw2;
+    fr(bx2, gy+gh-bh2+2, bw2-1, bh2);
+  }
+}
+
+// 5×7 font (built-in mini renderer)
+const FONT5x7 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz .:%/-°";
+const F5x7 = {};
+// Minimal 5x7 bitmap font data (column-encoded, LSB=top)
+const F=[
+ [0x3E,0x51,0x49,0x45,0x3E],[0x00,0x42,0x7F,0x40,0x00],[0x62,0x51,0x49,0x49,0x46],
+ [0x22,0x41,0x49,0x49,0x36],[0x18,0x14,0x12,0x7F,0x10],[0x27,0x45,0x45,0x45,0x39],
+ [0x3C,0x4A,0x49,0x49,0x30],[0x01,0x71,0x09,0x05,0x03],[0x36,0x49,0x49,0x49,0x36],
+ [0x06,0x49,0x49,0x29,0x1E],
+ [0x7E,0x09,0x09,0x09,0x7E],[0x7F,0x49,0x49,0x49,0x36],[0x3E,0x41,0x41,0x41,0x22],
+ [0x7F,0x41,0x41,0x22,0x1C],[0x7F,0x49,0x49,0x49,0x41],[0x7F,0x09,0x09,0x09,0x01],
+ [0x3E,0x41,0x41,0x49,0x3A],[0x7F,0x08,0x08,0x08,0x7F],[0x00,0x41,0x7F,0x41,0x00],
+ [0x20,0x40,0x40,0x3F,0x00],[0x7F,0x08,0x14,0x22,0x41],[0x7F,0x40,0x40,0x40,0x40],
+ [0x7F,0x02,0x0C,0x02,0x7F],[0x7F,0x04,0x08,0x10,0x7F],[0x3E,0x41,0x41,0x41,0x3E],
+ [0x7F,0x09,0x09,0x09,0x06],[0x3E,0x41,0x51,0x21,0x5E],[0x7F,0x09,0x19,0x29,0x46],
+ [0x26,0x49,0x49,0x49,0x32],[0x01,0x01,0x7F,0x01,0x01],[0x3F,0x40,0x40,0x40,0x3F],
+ [0x1F,0x20,0x40,0x20,0x1F],[0x3F,0x40,0x38,0x40,0x3F],[0x63,0x14,0x08,0x14,0x63],
+ [0x03,0x04,0x78,0x04,0x03],[0x61,0x51,0x49,0x45,0x43],
+ [0x20,0x54,0x54,0x54,0x78],[0x7F,0x44,0x44,0x44,0x38],[0x38,0x44,0x44,0x44,0x28],
+ [0x38,0x44,0x44,0x44,0x7F],[0x38,0x54,0x54,0x54,0x18],[0x08,0x7E,0x09,0x01,0x02],
+ [0x18,0xA4,0xA4,0xA4,0x7C],[0x7F,0x04,0x04,0x04,0x78],[0x00,0x44,0x7D,0x40,0x00],
+ [0x40,0x80,0x84,0x7D,0x00],[0x7F,0x10,0x28,0x44,0x00],[0x00,0x41,0x7F,0x40,0x00],
+ [0x7C,0x04,0x18,0x04,0x78],[0x7C,0x08,0x04,0x04,0x78],[0x38,0x44,0x44,0x44,0x38],
+ [0xFC,0x24,0x24,0x24,0x18],[0x18,0x24,0x24,0x24,0xFC],[0x7C,0x08,0x04,0x04,0x08],
+ [0x48,0x54,0x54,0x54,0x24],[0x04,0x3F,0x44,0x40,0x20],[0x3C,0x40,0x40,0x20,0x7C],
+ [0x1C,0x20,0x40,0x20,0x1C],[0x3C,0x40,0x30,0x40,0x3C],[0x44,0x28,0x10,0x28,0x44],
+ [0x0C,0x50,0x50,0x50,0x3C],[0x44,0x64,0x54,0x4C,0x44],
+ [0x00,0x00,0x00,0x00,0x00],[0x00,0x60,0x60,0x00,0x00],[0x00,0x36,0x36,0x00,0x00],
+ [0x48,0x54,0x54,0x54,0x24],[0x40,0x20,0x10,0x08,0x04],[0x06,0x09,0x09,0x06,0x00],
+];
+for(let i=0;i<FONT5x7.length;i++) F5x7[FONT5x7[i]]=F[i]||F[F.length-1];
+
+function drawSmallStr(x,y,s) {
+  let cx=x;
+  for(const ch of s) {
+    const g=F5x7[ch]||F5x7[' '];
+    if(g) for(let col=0;col<5;col++) for(let row=0;row<7;row++) if((g[col]>>row)&1) px(cx+col,y+row,1);
+    cx+=6;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  SLIDER WIRING
+// ═══════════════════════════════════════════════════════
+
+function wire(id, fmt) {
+  const s=document.getElementById('s'+id);
+  const v=document.getElementById('v'+id);
+  s.addEventListener('input',()=>{ v.textContent=fmt(parseInt(s.value)); draw(); });
+}
+wire('Temp', v=>(v<0?'-':'')+Math.floor(Math.abs(v)/10)+'.'+Math.abs(v)%10+'°C');
+wire('Press', v=>v+' hPa');
+wire('Hum', v=>Math.floor(v/10)+'.'+v%10+'%');
+wire('Lux', v=>v+' lux');
+wire('Bat', v=>v+'%');
+wire('Sig', v=>v+'%');
+
+draw();
+</script>
+</body>
+</html>

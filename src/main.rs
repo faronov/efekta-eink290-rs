@@ -73,11 +73,31 @@ const LONG_PRESS_MS: u64 = 5000;
 const BME280_ADDR: u8 = 0x77;
 const MAX44009_ADDR: u8 = 0x4A;
 
-/// CR2032 battery voltage divider constants.
+/// 2×AAA NiMH battery voltage scaling constants.
 /// nRF52840 SAADC with VDD/3 internal channel, 10-bit, 0.6V reference.
 /// V_battery = raw * 3 * 0.6 / 1024
 const BATTERY_SCALE_MV_NUM: u32 = 1800; // 3 * 600
 const BATTERY_SCALE_MV_DEN: u32 = 1024;
+
+/// Piecewise-linear battery percentage for 2×AAA NiMH cells.
+/// Input: total voltage in mV (both cells in series).
+/// Returns ZCL value: 0..200 (0.5% units, i.e. 200 = 100%).
+fn battery_pct_nimh_2s(mv: u32) -> u8 {
+    let p: u32 = if mv >= 2700 {
+        100 // freshly charged / no load
+    } else if mv > 2500 {
+        80 + (mv - 2500) * 20 / 200
+    } else if mv > 2400 {
+        50 + (mv - 2400) * 30 / 100 // flat working plateau
+    } else if mv > 2200 {
+        10 + (mv - 2200) * 40 / 200
+    } else if mv > 2000 {
+        (mv - 2000) * 10 / 200 // tail end
+    } else {
+        0
+    };
+    (p * 2) as u8 // ZCL: 0..200 (0.5%)
+}
 
 bind_interrupts!(struct Irqs {
     RADIO => radio::InterruptHandler<peripherals::RADIO>;
@@ -153,6 +173,11 @@ async fn main(_spawner: Spawner) {
     let mut press_cluster = PressureCluster::new(3000, 11000); // 300.0–1100.0 hPa
     let mut illum_cluster = IlluminanceCluster::new(1, 50000);
     let mut power_cluster = PowerConfigCluster::new();
+    // 2×AAA NiMH: size=AAA(4), quantity=2, rated=1.2V(12), min threshold=2.0V(20)
+    power_cluster.set_battery_size(4); // AAA
+    power_cluster.set_battery_quantity(2);
+    power_cluster.set_battery_rated_voltage(12); // 1.2V per cell
+    power_cluster.set_battery_voltage_min_threshold(20); // 2.0V total cutoff
 
     // ── Zigbee device: endpoint 1 with 7 server clusters ────
     let mut device = ZigbeeDevice::builder(mac)
@@ -384,14 +409,9 @@ async fn read_sensors(
 
     // ZCL PowerConfig: BatteryVoltage in units of 100mV
     let batt_voltage_zcl = (battery_mv / 100) as u8;
-    // Percentage: CR2032 range ~2.0V (empty) to 3.0V (full)
-    let batt_pct = if battery_mv >= 3000 {
-        200u8 // 100% in ZCL half-percent units
-    } else if battery_mv <= 2000 {
-        0u8
-    } else {
-        ((battery_mv - 2000) * 200 / 1000) as u8
-    };
+    // Percentage: 2×AAA NiMH piecewise-linear curve
+    // Returns ZCL 0..200 (0.5% units)
+    let batt_pct = battery_pct_nimh_2s(battery_mv);
     power_cluster.set_battery_voltage(batt_voltage_zcl);
     power_cluster.set_battery_percentage(batt_pct);
     info!("Battery: {}mV ({}%)", battery_mv, batt_pct / 2);
@@ -402,7 +422,16 @@ async fn read_sensors(
         pressure_hpa: 0,
         lux: 0,
         battery_pct: batt_pct / 2,
+        battery_mv: battery_mv as u16,
         joined: false, // caller sets this
+        pressure_history: [0u16; 24],
+        pressure_history_len: 0,
+        time_hour: 0,
+        time_minute: 0,
+        date_day: 0,
+        date_month: 0,
+        prev_temperature_centideg: 0, // TODO: persist across cycles
+        colon_on: true,               // TODO: toggle each cycle
     };
 
     // ── BME280: temperature, humidity, pressure ─────────
