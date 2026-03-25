@@ -1,0 +1,6 @@
+MEMORY
+{
+  /* Efekta E-Ink 290 nRF52840 custom board */
+  FLASH : ORIGIN = 0x00000000, LENGTH = 1024K
+  RAM   : ORIGIN = 0x20000000, LENGTH = 256K
+}

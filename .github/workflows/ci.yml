@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + thumbv7em target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: thumbv7em-none-eabihf
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --release
+
+      - name: Clippy
+        run: cargo clippy --release -- -D warnings
+
+      - name: Format
+        run: cargo fmt -- --check
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: efekta-eink290-firmware
+          path: target/thumbv7em-none-eabihf/release/efekta-eink290-rs
