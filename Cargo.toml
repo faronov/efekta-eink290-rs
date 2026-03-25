@@ -6,6 +6,13 @@ description = "Efekta E-Ink 290 multi-sensor Zigbee firmware in Rust (BME280 + M
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/faronov/efekta-eink290-rs"
 
+[features]
+default = []
+# UART debug: replaces e-paper display with UART logging on TX=P0.09 RX=P0.10.
+# TWISPI1 is used as UARTE1 instead of SPIM1, so the display is disabled.
+# Build: cargo build --features uart-debug
+uart-debug = []
+
 [dependencies]
 # Zigbee stack (git dependency)
 zigbee-types = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
@@ -16,7 +23,8 @@ zigbee-zcl = { git = "https://github.com/faronov/zigbee-rs.git", branch = "maste
 zigbee-runtime = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
 
 # nRF52840 Embassy HAL
-embassy-nrf = { version = "0.3", features = ["nrf52840", "time-driver-rtc1", "gpiote"] }
+# nfc-pins-as-gpio: P0.09/P0.10 are NFC pins by default; enable GPIO for UART TX/RX
+embassy-nrf = { version = "0.3", features = ["nrf52840", "time-driver-rtc1", "gpiote", "nfc-pins-as-gpio"] }
 embassy-executor = { version = "0.7", features = ["task-arena-size-32768", "arch-cortex-m", "executor-thread"] }
 embassy-time = "0.5"
 embassy-futures = "0.1"
@@ -34,6 +42,9 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 # Embedded HAL traits
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
+
+# Embedded I/O (for UART write in uart-debug mode)
+embedded-io-async = "0.6"
 
 [profile.release]
 opt-level = "s"

@@ -53,3 +53,45 @@ jobs:
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs.hex
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs.bin
+
+  build-uart-debug:
+    name: Build UART debug firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + thumbv7em target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: thumbv7em-none-eabihf
+          components: clippy, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: uart-debug
+
+      - name: Clippy (uart-debug)
+        run: cargo clippy --features uart-debug -- -D warnings
+
+      - name: Build release (uart-debug)
+        run: cargo build --release --features uart-debug
+
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils
+
+      - name: Generate hex and bin
+        run: |
+          ELF=target/thumbv7em-none-eabihf/release/efekta-eink290-rs
+          rust-objcopy -O ihex   "$ELF" "$ELF-uart-debug.hex"
+          rust-objcopy -O binary "$ELF" "$ELF-uart-debug.bin"
+          cp "$ELF" "$ELF-uart-debug.elf"
+          ls -lh "$ELF-uart-debug.elf" "$ELF-uart-debug.hex" "$ELF-uart-debug.bin"
+
+      - name: Upload uart-debug artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: efekta-eink290-uart-debug
+          path: |
+            target/thumbv7em-none-eabihf/release/efekta-eink290-rs-uart-debug.elf
+            target/thumbv7em-none-eabihf/release/efekta-eink290-rs-uart-debug.hex
+            target/thumbv7em-none-eabihf/release/efekta-eink290-rs-uart-debug.bin

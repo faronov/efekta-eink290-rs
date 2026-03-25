@@ -4,20 +4,23 @@
 //! Uses [zigbee-rs](https://github.com/faronov/zigbee-rs) stack
 //! instead of NCS/ZBOSS.
 //!
-//! ## Hardware (Efekta custom PCB)
+//! ## Hardware (Efekta EBYTE2 custom PCB)
 //! - nRF52840 SoC
 //! - BME280 (I2C 0x77): temperature, humidity, pressure
 //! - MAX44009 (I2C 0x4A): ambient light / illuminance
-//! - 2.9" e-paper display (SSD1680 or UC8151 via SPI) — future
+//! - 2.9" e-paper display (SSD1680 via SPI)
+//! - Buzzer/speaker (P0.30, PWM)
 //! - Button (P0.24, active low, internal pull-up)
 //! - LED (P0.02, active low)
-//! - CR2032 battery
+//! - 2×AAA NiMH battery
 //!
-//! ## Pin Map (from Efekta DTS)
-//! - I2C0 SDA: P0.30
-//! - I2C0 SCL: P0.31
-//! - LED0: P0.02 (active low)
-//! - Button0: P0.24 (active low, pull-up)
+//! ## Pin Map (EBYTE2 variant from variant.h)
+//! - I2C: SDA=P0.28, SCL=P0.03
+//! - SPI: MOSI=P0.15, SCK=P0.20, CS=P0.22 (MISO=P0.21 NC)
+//! - E-paper: RST=P0.17, DC=P0.31, BUSY=P0.13
+//! - UART: TX=P0.09, RX=P0.10 (NFC pins, reconfigured as GPIO)
+//! - Buzzer: P0.30
+//! - LED: P0.02, Button: P0.24
 //!
 //! ## ZCL Clusters (Endpoint 1, HA Profile 0x0104)
 //! - 0x0000 Basic (server)
@@ -35,6 +38,10 @@
 //! - LED fast blink → joining network
 //! - LED off → normal operation (battery saving)
 //! - Sensors read every 60s, values reported via ZCL attribute reporting
+//!
+//! ## Build variants
+//! - Default: release firmware with e-paper display, RTT logging (needs SWD probe)
+//! - `--features uart-debug`: UART logging on TX=P0.09 (115200), no e-paper display
 
 #![no_std]
 #![no_main]
@@ -42,8 +49,11 @@
 use embassy_executor::Spawner;
 use embassy_futures::select::{select3, Either3};
 use embassy_nrf::saadc::{self, Saadc};
+#[cfg(not(feature = "uart-debug"))]
 use embassy_nrf::spim;
 use embassy_nrf::twim::{self, Twim};
+#[cfg(feature = "uart-debug")]
+use embassy_nrf::uarte;
 use embassy_nrf::{self as _, bind_interrupts, gpio, peripherals, radio};
 use embassy_time::{Duration, Instant, Timer};
 
@@ -63,9 +73,12 @@ use zigbee_zcl::clusters::Cluster;
 use zigbee_zcl::ClusterId;
 
 mod bme280;
+#[cfg_attr(feature = "uart-debug", allow(dead_code))]
 mod display;
 mod max44009;
+#[cfg_attr(feature = "uart-debug", allow(dead_code))]
 mod paint;
+#[cfg_attr(feature = "uart-debug", allow(dead_code))]
 mod ssd1680;
 
 const REPORT_INTERVAL_SECS: u64 = 60;
@@ -99,10 +112,19 @@ fn battery_pct_nimh_2s(mv: u32) -> u8 {
     (p * 2) as u8 // ZCL: 0..200 (0.5%)
 }
 
+#[cfg(not(feature = "uart-debug"))]
 bind_interrupts!(struct Irqs {
     RADIO => radio::InterruptHandler<peripherals::RADIO>;
     TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
     TWISPI1 => spim::InterruptHandler<peripherals::TWISPI1>;
+    SAADC => saadc::InterruptHandler;
+});
+
+#[cfg(feature = "uart-debug")]
+bind_interrupts!(struct Irqs {
+    RADIO => radio::InterruptHandler<peripherals::RADIO>;
+    TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
+    UARTE1 => uarte::InterruptHandler<peripherals::UARTE1>;
     SAADC => saadc::InterruptHandler;
 });
 
@@ -124,27 +146,50 @@ async fn main(_spawner: Spawner) {
     let mut led = gpio::Output::new(p.P0_02, gpio::Level::High, gpio::OutputDrive::Standard);
     let mut button = gpio::Input::new(p.P0_24, gpio::Pull::Up);
 
-    // ── I2C bus (BME280 + MAX44009) ─────────────────────────
+    // ── I2C bus (BME280 + MAX44009) — SDA=P0.28, SCL=P0.03 ──
     let mut i2c_config = twim::Config::default();
     i2c_config.frequency = twim::Frequency::K400;
-    let mut i2c = Twim::new(p.TWISPI0, Irqs, p.P0_30, p.P0_31, i2c_config);
+    let mut i2c = Twim::new(p.TWISPI0, Irqs, p.P0_28, p.P0_03, i2c_config);
 
     // ── SAADC for battery voltage ───────────────────────────
     let saadc_config = saadc::Config::default();
     let channel_config = saadc::ChannelConfig::single_ended(saadc::VddInput);
     let mut adc = Saadc::new(p.SAADC, Irqs, saadc_config, [channel_config]);
 
-    // ── SPI1 for e-paper display (SSD1680) ──────────────────
-    let mut spi_config = spim::Config::default();
-    spi_config.frequency = spim::Frequency::M2;
-    let spi = spim::Spim::new(p.TWISPI1, Irqs, p.P0_08, p.P0_06, p.P0_05, spi_config);
-    let cs = gpio::Output::new(p.P0_07, gpio::Level::High, gpio::OutputDrive::Standard);
-    let dc = gpio::Output::new(p.P0_27, gpio::Level::Low, gpio::OutputDrive::Standard);
-    let rst = gpio::Output::new(p.P0_26, gpio::Level::High, gpio::OutputDrive::Standard);
-    let busy = gpio::Input::new(p.P0_04, gpio::Pull::None);
+    // ── Buzzer (P0.30) — GPIO output, driven by software/PWM ─
+    let mut _buzzer = gpio::Output::new(p.P0_30, gpio::Level::Low, gpio::OutputDrive::Standard);
 
-    let mut epd = ssd1680::Ssd1680::new(spi, cs, dc, rst, busy).await;
+    // ── UART debug mode: TX=P0.09, RX=P0.10 at 115200 ──────
+    #[cfg(feature = "uart-debug")]
+    let mut uart = {
+        let mut config = uarte::Config::default();
+        config.baudrate = uarte::Baudrate::BAUD115200;
+        // UARTE1 shares hardware with TWISPI1 (no SPI display in this mode)
+        uarte::UarteTx::new(p.UARTE1, Irqs, p.P0_09, config)
+    };
+    #[cfg(feature = "uart-debug")]
+    {
+        use embedded_io_async::Write;
+        let _ = uart.write_all(b"\r\n=== Efekta E-Ink 290 UART debug ===\r\n").await;
+        info!("UART debug active on TX=P0.09 115200");
+    }
+
+    // ── SPI1 for e-paper display (SSD1680) — only in normal mode ─
+    #[cfg(not(feature = "uart-debug"))]
+    let mut epd = {
+        let mut spi_config = spim::Config::default();
+        spi_config.frequency = spim::Frequency::M2;
+        // EBYTE2: MOSI=P0.15, SCK=P0.20, MISO=P0.21(NC)
+        let spi = spim::Spim::new(p.TWISPI1, Irqs, p.P0_20, p.P0_15, p.P0_21, spi_config);
+        let cs = gpio::Output::new(p.P0_22, gpio::Level::High, gpio::OutputDrive::Standard);
+        let dc = gpio::Output::new(p.P0_31, gpio::Level::Low, gpio::OutputDrive::Standard);
+        let rst = gpio::Output::new(p.P0_17, gpio::Level::High, gpio::OutputDrive::Standard);
+        let busy = gpio::Input::new(p.P0_13, gpio::Pull::None);
+        ssd1680::Ssd1680::new(spi, cs, dc, rst, busy).await
+    };
+    #[cfg(not(feature = "uart-debug"))]
     let mut epd_paint = paint::Paint::new();
+    #[cfg(not(feature = "uart-debug"))]
     info!("E-paper display ready");
 
     // ── Initialize sensors ──────────────────────────────────
@@ -290,10 +335,15 @@ async fn main(_spawner: Spawner) {
 
                                 // Update e-paper display
                                 disp_data.joined = net_state == NetworkState::Joined;
-                                epd.wake().await;
-                                display::draw_dashboard(&mut epd_paint, &disp_data);
-                                epd.display(&epd_paint.buf).await;
-                                epd.sleep().await;
+                                #[cfg(not(feature = "uart-debug"))]
+                                {
+                                    epd.wake().await;
+                                    display::draw_dashboard(&mut epd_paint, &disp_data);
+                                    epd.display(&epd_paint.buf).await;
+                                    epd.sleep().await;
+                                }
+                                #[cfg(feature = "uart-debug")]
+                                uart_log_sensors(&mut uart, &disp_data).await;
                             }
                             NetworkState::Joining => {
                                 info!("Already joining…");
@@ -377,10 +427,15 @@ async fn main(_spawner: Spawner) {
 
                     // Update e-paper display
                     disp_data.joined = true;
-                    epd.wake().await;
-                    display::draw_dashboard(&mut epd_paint, &disp_data);
-                    epd.display(&epd_paint.buf).await;
-                    epd.sleep().await;
+                    #[cfg(not(feature = "uart-debug"))]
+                    {
+                        epd.wake().await;
+                        display::draw_dashboard(&mut epd_paint, &disp_data);
+                        epd.display(&epd_paint.buf).await;
+                        epd.sleep().await;
+                    }
+                    #[cfg(feature = "uart-debug")]
+                    uart_log_sensors(&mut uart, &disp_data).await;
                 }
             }
         }
@@ -525,4 +580,119 @@ async fn led_flash(led: &mut gpio::Output<'_>, count: u8) {
             Timer::after(Duration::from_millis(100)).await;
         }
     }
+}
+
+/// UART debug: print sensor readings as plain text over serial.
+/// Format is human-readable ASCII at 115200 baud.
+#[cfg(feature = "uart-debug")]
+async fn uart_log_sensors(
+    uart: &mut uarte::UarteTx<'_, peripherals::UARTE1>,
+    data: &display::DisplayData,
+) {
+    use embedded_io_async::Write;
+    let mut buf = [0u8; 200];
+    let neg = data.temperature_centideg < 0;
+    let abs_t = if neg {
+        (-(data.temperature_centideg as i32)) as u16
+    } else {
+        data.temperature_centideg as u16
+    };
+    let len = fmt_uart(
+        &mut buf,
+        neg,
+        abs_t / 100,
+        (abs_t % 100) / 10,
+        data.humidity_centipct / 100,
+        (data.humidity_centipct % 100) / 10,
+        data.pressure_hpa,
+        data.lux,
+        data.battery_mv,
+        data.battery_pct,
+        data.joined,
+    );
+    let _ = uart.write_all(&buf[..len]).await;
+}
+
+/// Format sensor data into a plain text line (no alloc, no core::fmt).
+/// Returns number of bytes written.
+#[cfg(feature = "uart-debug")]
+#[allow(clippy::too_many_arguments)]
+fn fmt_uart(
+    buf: &mut [u8],
+    neg: bool,
+    t_int: u16,
+    t_frac: u16,
+    h_int: u16,
+    h_frac: u16,
+    press: u16,
+    lux: u16,
+    bat_mv: u16,
+    bat_pct: u8,
+    joined: bool,
+) -> usize {
+    let mut pos = 0usize;
+    pos = put_str(buf, pos, b"T=");
+    if neg {
+        pos = put_byte(buf, pos, b'-');
+    }
+    pos = put_u16(buf, pos, t_int);
+    pos = put_byte(buf, pos, b'.');
+    pos = put_u16(buf, pos, t_frac);
+    pos = put_str(buf, pos, b"C H=");
+    pos = put_u16(buf, pos, h_int);
+    pos = put_byte(buf, pos, b'.');
+    pos = put_u16(buf, pos, h_frac);
+    pos = put_str(buf, pos, b"% P=");
+    pos = put_u16(buf, pos, press);
+    pos = put_str(buf, pos, b"hPa L=");
+    pos = put_u16(buf, pos, lux);
+    pos = put_str(buf, pos, b"lux B=");
+    pos = put_u16(buf, pos, bat_mv);
+    pos = put_str(buf, pos, b"mV(");
+    pos = put_u16(buf, pos, bat_pct as u16);
+    pos = put_str(buf, pos, b"%) ZB=");
+    pos = put_str(buf, pos, if joined { b"joined" } else { b"offline" });
+    pos = put_str(buf, pos, b"\r\n");
+    pos
+}
+
+#[cfg(feature = "uart-debug")]
+fn put_byte(buf: &mut [u8], pos: usize, b: u8) -> usize {
+    if pos < buf.len() {
+        buf[pos] = b;
+        pos + 1
+    } else {
+        pos
+    }
+}
+
+#[cfg(feature = "uart-debug")]
+fn put_str(buf: &mut [u8], mut pos: usize, s: &[u8]) -> usize {
+    for &b in s {
+        if pos < buf.len() {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
+    pos
+}
+
+#[cfg(feature = "uart-debug")]
+fn put_u16(buf: &mut [u8], pos: usize, mut v: u16) -> usize {
+    if v == 0 {
+        return put_byte(buf, pos, b'0');
+    }
+    let mut d = [0u8; 5];
+    let mut n = 0usize;
+    while v > 0 {
+        d[n] = b'0' + (v % 10) as u8;
+        v /= 10;
+        n += 1;
+    }
+    let mut p = pos;
+    while n > 0 {
+        n -= 1;
+        p = put_byte(buf, p, d[n]);
+    }
+    p
 }
