@@ -67,6 +67,7 @@ use zigbee_runtime::event_loop::{StackEvent, TickResult};
 use zigbee_runtime::ota::{OtaConfig, OtaManager};
 use zigbee_runtime::{UserAction, ZigbeeDevice};
 use zigbee_zcl::clusters::humidity::HumidityCluster;
+use zigbee_zcl::clusters::identify::IdentifyCluster;
 use zigbee_zcl::clusters::illuminance::IlluminanceCluster;
 use zigbee_zcl::clusters::power_config::PowerConfigCluster;
 use zigbee_zcl::clusters::pressure::PressureCluster;
@@ -212,8 +213,9 @@ async fn main(_spawner: Spawner) {
 
     // ── 802.15.4 radio ──────────────────────────────────────
     let radio = radio::ieee802154::Radio::new(p.RADIO, Irqs);
-    let mac = zigbee_mac::nrf::NrfMac::new(radio);
-    info!("Radio ready");
+    let mut mac = zigbee_mac::nrf::NrfMac::new(radio);
+    mac.set_tx_power(4); // +4 dBm (nRF52840 supports -40 to +8)
+    info!("Radio ready (+4 dBm)");
 
     // ── OTA Manager (flash writer + ZCL cluster) ──────────
     let nvmc = Nvmc::new(p.NVMC);
@@ -229,6 +231,7 @@ async fn main(_spawner: Spawner) {
     let mut ota_mgr = OtaManager::new(fw_writer, ota_config);
 
     // ── ZCL cluster instances ───────────────────────────────
+    let mut identify_cluster = IdentifyCluster::new();
     let mut temp_cluster = TemperatureCluster::new(-4000, 12500);
     let mut hum_cluster = HumidityCluster::new(0, 10000);
     let mut press_cluster = PressureCluster::new(3000, 11000); // 300.0–1100.0 hPa
@@ -278,6 +281,15 @@ async fn main(_spawner: Spawner) {
             // ── Incoming MAC frame ──────────────────────────
             Either3::First(Ok(indication)) => {
                 if let Some(event) = device.process_incoming(&indication) {
+                    // Route Identify cluster commands to our IdentifyCluster
+                    if let StackEvent::CommandReceived { cluster_id, command_id, ref payload, .. } = event {
+                        if cluster_id == ClusterId::IDENTIFY.0 {
+                            let _ = identify_cluster.handle_command(
+                                zigbee_zcl::CommandId(command_id),
+                                payload.as_slice(),
+                            );
+                        }
+                    }
                     handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer);
                     // Start OTA check shortly after joining
                     if matches!(event, StackEvent::Joined { .. }) {
@@ -393,6 +405,17 @@ async fn main(_spawner: Spawner) {
                 // Tick reporting timers first
                 if let TickResult::Event(ref e) = device.tick(REPORT_INTERVAL_SECS as u16).await {
                     handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
+                }
+
+                // Tick identify cluster countdown
+                let was_identifying = identify_cluster.is_identifying();
+                identify_cluster.tick(REPORT_INTERVAL_SECS as u16);
+                if identify_cluster.is_identifying() {
+                    // Beep buzzer + flash LED each cycle while identifying
+                    buzzer_chirp(&mut buzzer);
+                    led_flash(&mut led, 2).await;
+                } else if was_identifying {
+                    info!("Identify complete");
                 }
 
                 if device.is_joined() {
