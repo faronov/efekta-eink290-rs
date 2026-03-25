@@ -20,7 +20,7 @@ zigbee-mac = { git = "https://github.com/faronov/zigbee-rs.git", branch = "maste
 zigbee-nwk = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
 zigbee-aps = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
 zigbee-zcl = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
-zigbee-runtime = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
+zigbee-runtime = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master", features = ["ota"] }
 
 # nRF52840 Embassy HAL
 # nfc-pins-as-gpio: P0.09/P0.10 are NFC pins by default; enable GPIO for UART TX/RX
@@ -45,6 +45,9 @@ embedded-hal-async = "1.0"
 
 # Embedded I/O (for UART write in uart-debug mode)
 embedded-io-async = "0.6"
+
+# Flash storage traits (for OTA firmware writes)
+embedded-storage = "0.3"
 
 [profile.release]
 opt-level = "s"

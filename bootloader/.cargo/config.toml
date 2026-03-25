@@ -1,0 +1,7 @@
+[target.thumbv7em-none-eabihf]
+runner = "probe-rs run --chip nRF52840_xxAA"
+# Note: do NOT add -Tmemory.x here — cortex-m-rt's link.x already INCLUDEs it
+rustflags = ["-C", "link-arg=-Tlink.x"]
+
+[build]
+target = "thumbv7em-none-eabihf"

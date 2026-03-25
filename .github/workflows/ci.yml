@@ -32,21 +32,48 @@ jobs:
       - name: Format
         run: cargo fmt -- --check
 
-      - name: Build release
+      - name: Build release (app)
         run: cargo build --release
+
+      - name: Build bootloader
+        run: cargo build --release --manifest-path bootloader/Cargo.toml
 
       - name: Install cargo-binutils
         run: cargo install cargo-binutils
 
-      - name: Generate hex, bin, and OTA
+      - name: Generate hex, bin, merged hex, and OTA
         run: |
-          ELF=target/thumbv7em-none-eabihf/release/efekta-eink290-rs
-          rust-objcopy -O ihex   "$ELF" "$ELF.hex"
-          rust-objcopy -O binary "$ELF" "$ELF.bin"
-          python3 scripts/make_ota.py "$ELF.bin" "$ELF.zigbee" \
+          APP_ELF=target/thumbv7em-none-eabihf/release/efekta-eink290-rs
+          BOOT_ELF=bootloader/target/thumbv7em-none-eabihf/release/efekta-bootloader
+
+          # App hex/bin
+          rust-objcopy -O ihex   "$APP_ELF"  "$APP_ELF.hex"
+          rust-objcopy -O binary "$APP_ELF"  "$APP_ELF.bin"
+
+          # Bootloader hex
+          rust-objcopy -O ihex   "$BOOT_ELF" "$BOOT_ELF.hex"
+
+          # Merge bootloader + app into single hex for factory flashing
+          # srec_cat merges non-overlapping Intel HEX files
+          pip install intelhex
+          python3 -c "
+          from intelhex import IntelHex
+          boot = IntelHex('$BOOT_ELF.hex')
+          app  = IntelHex('$APP_ELF.hex')
+          boot.merge(app)
+          boot.write_hex_file('$APP_ELF-merged.hex')
+          print('Merged hex: boot + app')
+          "
+
+          # OTA .zigbee package (app only, no bootloader)
+          python3 scripts/make_ota.py "$APP_ELF.bin" "$APP_ELF.zigbee" \
             --manufacturer 0x1234 --image-type 0x0001 \
-            --version 0x00000100 --string "Efekta EInk290 nRF52840"
-          ls -lh "$ELF" "$ELF.hex" "$ELF.bin" "$ELF.zigbee"
+            --version 0x00010000 --string "Efekta EInk290 nRF52840"
+
+          echo "=== Sizes ==="
+          rust-size "$APP_ELF"
+          rust-size "$BOOT_ELF"
+          ls -lh "$APP_ELF.hex" "$APP_ELF.bin" "$APP_ELF-merged.hex" "$APP_ELF.zigbee" "$BOOT_ELF.hex"
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
@@ -56,7 +83,9 @@ jobs:
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs.hex
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs.bin
+            target/thumbv7em-none-eabihf/release/efekta-eink290-rs-merged.hex
             target/thumbv7em-none-eabihf/release/efekta-eink290-rs.zigbee
+            bootloader/target/thumbv7em-none-eabihf/release/efekta-bootloader.hex
 
   build-uart-debug:
     name: Build UART debug firmware

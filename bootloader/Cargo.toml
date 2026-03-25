@@ -1,0 +1,19 @@
+[package]
+name = "efekta-bootloader"
+version = "0.1.0"
+edition = "2021"
+description = "Embassy-boot bootloader for Efekta E-Ink 290 nRF52840"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+embassy-nrf = { version = "0.3", features = ["nrf52840"] }
+embassy-boot-nrf = { version = "0.4" }
+embassy-sync = "0.6"
+cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = "fat"
+opt-level = "z"

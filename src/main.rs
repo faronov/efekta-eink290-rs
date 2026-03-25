@@ -48,6 +48,7 @@
 
 use embassy_executor::Spawner;
 use embassy_futures::select::{select3, Either3};
+use embassy_nrf::nvmc::Nvmc;
 use embassy_nrf::saadc::{self, Saadc};
 #[cfg(not(feature = "uart-debug"))]
 use embassy_nrf::spim;
@@ -63,6 +64,7 @@ use {defmt_rtt as _, panic_probe as _};
 use zigbee_aps::PROFILE_HOME_AUTOMATION;
 use zigbee_nwk::DeviceType;
 use zigbee_runtime::event_loop::{StackEvent, TickResult};
+use zigbee_runtime::ota::{OtaConfig, OtaManager};
 use zigbee_runtime::{UserAction, ZigbeeDevice};
 use zigbee_zcl::clusters::humidity::HumidityCluster;
 use zigbee_zcl::clusters::illuminance::IlluminanceCluster;
@@ -76,6 +78,7 @@ mod bme280;
 #[cfg_attr(feature = "uart-debug", allow(dead_code))]
 mod display;
 mod max44009;
+mod ota;
 #[cfg_attr(feature = "uart-debug", allow(dead_code))]
 mod paint;
 #[cfg_attr(feature = "uart-debug", allow(dead_code))]
@@ -212,6 +215,19 @@ async fn main(_spawner: Spawner) {
     let mac = zigbee_mac::nrf::NrfMac::new(radio);
     info!("Radio ready");
 
+    // ── OTA Manager (flash writer + ZCL cluster) ──────────
+    let nvmc = Nvmc::new(p.NVMC);
+    let fw_writer = ota::NrfFirmwareWriter::new(nvmc);
+    let ota_config = OtaConfig {
+        manufacturer_code: 0x1234,
+        image_type: 0x0001,
+        current_version: 0x0001_0000, // 1.0.0
+        endpoint: 1,
+        block_size: 48,
+        auto_accept: true,
+    };
+    let mut ota_mgr = OtaManager::new(fw_writer, ota_config);
+
     // ── ZCL cluster instances ───────────────────────────────
     let mut temp_cluster = TemperatureCluster::new(-4000, 12500);
     let mut hum_cluster = HumidityCluster::new(0, 10000);
@@ -224,7 +240,7 @@ async fn main(_spawner: Spawner) {
     power_cluster.set_battery_rated_voltage(12); // 1.2V per cell
     power_cluster.set_battery_voltage_min_threshold(20); // 2.0V total cutoff
 
-    // ── Zigbee device: endpoint 1 with 7 server clusters ────
+    // ── Zigbee device: endpoint 1 with 8 server clusters ────
     let mut device = ZigbeeDevice::builder(mac)
         .device_type(DeviceType::EndDevice)
         .manufacturer("Efekta")
@@ -239,11 +255,14 @@ async fn main(_spawner: Spawner) {
                 .cluster_server(0x0405) // Relative Humidity
                 .cluster_server(0x0403) // Pressure Measurement
                 .cluster_server(0x0400) // Illuminance Measurement
+                .cluster_client(0x0019) // OTA Upgrade (client role)
         })
         .build();
 
     let mut net_state = NetworkState::Initial;
     let mut button_press_start: Option<Instant> = None;
+    let mut ota_query_countdown: u32 = 0; // seconds until next OTA query
+    const OTA_QUERY_INTERVAL: u32 = 86400; // 24 hours
 
     info!("Ready — short press to join, long press (5s) for factory reset");
 
@@ -259,7 +278,12 @@ async fn main(_spawner: Spawner) {
             // ── Incoming MAC frame ──────────────────────────
             Either3::First(Ok(indication)) => {
                 if let Some(event) = device.process_incoming(&indication) {
-                    handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer);                }
+                    handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer);
+                    // Start OTA check shortly after joining
+                    if matches!(event, StackEvent::Joined { .. }) {
+                        ota_query_countdown = 30; // query in 30 seconds
+                    }
+                }
             }
             Either3::First(Err(_)) => warn!("MAC receive error"),
 
@@ -435,6 +459,41 @@ async fn main(_spawner: Spawner) {
                     }
                     #[cfg(feature = "uart-debug")]
                     uart_log_sensors(&mut uart, &disp_data).await;
+
+                    // ── OTA: periodic query + tick ───────────────
+                    let ota_elapsed = REPORT_INTERVAL_SECS as u16;
+                    if let Some(evt) = ota_mgr.tick(ota_elapsed) {
+                        handle_ota_event(&evt);
+                    }
+                    // Send any queued OTA frames
+                    if let Some(frame) = ota_mgr.take_pending_frame() {
+                        let _ = device.send_zcl_frame(
+                            zigbee_types::ShortAddress(0x0000), // coordinator
+                            frame.endpoint,
+                            frame.endpoint,
+                            frame.cluster_id,
+                            &frame.zcl_data,
+                        ).await;
+                    }
+
+                    // Check if it's time to query for new firmware
+                    if ota_query_countdown <= REPORT_INTERVAL_SECS as u32 {
+                        if let Some(evt) = ota_mgr.start_query() {
+                            handle_ota_event(&evt);
+                        }
+                        if let Some(frame) = ota_mgr.take_pending_frame() {
+                            let _ = device.send_zcl_frame(
+                                zigbee_types::ShortAddress(0x0000),
+                                frame.endpoint,
+                                frame.endpoint,
+                                frame.cluster_id,
+                                &frame.zcl_data,
+                            ).await;
+                        }
+                        ota_query_countdown = OTA_QUERY_INTERVAL;
+                    } else {
+                        ota_query_countdown -= REPORT_INTERVAL_SECS as u32;
+                    }
                 }
             }
         }
@@ -569,6 +628,23 @@ fn handle_stack_event(
         }
         StackEvent::ReportSent => info!("Report sent"),
         _ => info!("Stack event"),
+    }
+}
+
+/// Handle OTA-related stack events from the OtaManager.
+fn handle_ota_event(event: &StackEvent) {
+    match event {
+        StackEvent::OtaProgress { percent } => {
+            info!("OTA: {}% downloaded", percent);
+        }
+        StackEvent::OtaComplete => {
+            info!("OTA: complete — rebooting!");
+            cortex_m::peripheral::SCB::sys_reset();
+        }
+        StackEvent::OtaFailed => {
+            error!("OTA: failed");
+        }
+        _ => {}
     }
 }
 
