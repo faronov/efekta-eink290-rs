@@ -41,6 +41,7 @@
 
 use embassy_executor::Spawner;
 use embassy_futures::select::{select3, Either3};
+use embassy_nrf::saadc::{self, Saadc};
 use embassy_nrf::twim::{self, Twim};
 use embassy_nrf::{self as _, bind_interrupts, gpio, peripherals, radio};
 use embassy_time::{Duration, Instant, Timer};
@@ -52,6 +53,11 @@ use zigbee_aps::PROFILE_HOME_AUTOMATION;
 use zigbee_nwk::DeviceType;
 use zigbee_runtime::event_loop::{StackEvent, TickResult};
 use zigbee_runtime::{UserAction, ZigbeeDevice};
+use zigbee_zcl::clusters::humidity::HumidityCluster;
+use zigbee_zcl::clusters::illuminance::IlluminanceCluster;
+use zigbee_zcl::clusters::power_config::PowerConfigCluster;
+use zigbee_zcl::clusters::pressure::PressureCluster;
+use zigbee_zcl::clusters::temperature::TemperatureCluster;
 
 mod bme280;
 mod max44009;
@@ -61,9 +67,16 @@ const LONG_PRESS_MS: u64 = 5000;
 const BME280_ADDR: u8 = 0x77;
 const MAX44009_ADDR: u8 = 0x4A;
 
+/// CR2032 battery voltage divider constants.
+/// nRF52840 SAADC with VDD/3 internal channel, 10-bit, 0.6V reference.
+/// V_battery = raw * 3 * 0.6 / 1024
+const BATTERY_SCALE_MV_NUM: u32 = 1800; // 3 * 600
+const BATTERY_SCALE_MV_DEN: u32 = 1024;
+
 bind_interrupts!(struct Irqs {
     RADIO => radio::InterruptHandler<peripherals::RADIO>;
-    UARTE0_UART0 => twim::InterruptHandler<peripherals::TWISPI0>;
+    TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
+    SAADC => saadc::InterruptHandler;
 });
 
 #[derive(defmt::Format, Clone, Copy, PartialEq)]
@@ -89,6 +102,11 @@ async fn main(_spawner: Spawner) {
     i2c_config.frequency = twim::Frequency::K400;
     let mut i2c = Twim::new(p.TWISPI0, Irqs, p.P0_30, p.P0_31, i2c_config);
 
+    // ── SAADC for battery voltage ───────────────────────────
+    let saadc_config = saadc::Config::default();
+    let channel_config = saadc::ChannelConfig::single_ended(saadc::VddInput);
+    let mut adc = Saadc::new(p.SAADC, Irqs, saadc_config, [channel_config]);
+
     // ── Initialize sensors ──────────────────────────────────
     let bme280_ok = bme280::init(&mut i2c, BME280_ADDR).await;
     if bme280_ok {
@@ -108,6 +126,13 @@ async fn main(_spawner: Spawner) {
     let radio = radio::ieee802154::Radio::new(p.RADIO, Irqs);
     let mac = zigbee_mac::nrf::NrfMac::new(radio);
     info!("Radio ready");
+
+    // ── ZCL cluster instances ───────────────────────────────
+    let mut temp_cluster = TemperatureCluster::new(-4000, 12500);
+    let mut hum_cluster = HumidityCluster::new(0, 10000);
+    let mut press_cluster = PressureCluster::new(3000, 11000); // 300.0–1100.0 hPa
+    let mut illum_cluster = IlluminanceCluster::new(1, 50000);
+    let mut power_cluster = PowerConfigCluster::new();
 
     // ── Zigbee device: endpoint 1 with 7 server clusters ────
     let mut device = ZigbeeDevice::builder(mac)
@@ -159,9 +184,9 @@ async fn main(_spawner: Spawner) {
                     if press_ms >= LONG_PRESS_MS {
                         info!("Long press → factory reset + pair");
                         led_flash(&mut led, 5).await;
-                        net_state = NetworkState::Initial;
-                        device.user_action(UserAction::Toggle);
                         net_state = NetworkState::Joining;
+                        device.user_action(UserAction::Toggle);
+                        // second toggle re-starts commissioning
                         device.user_action(UserAction::Toggle);
                     } else if press_ms >= 50 {
                         match net_state {
@@ -169,7 +194,15 @@ async fn main(_spawner: Spawner) {
                                 info!("Short press → force report");
                                 led_flash(&mut led, 3).await;
                                 report_sensors(
-                                    &mut i2c, &mut device, bme280_ok, max44009_ok,
+                                    &mut i2c,
+                                    &mut adc,
+                                    &mut temp_cluster,
+                                    &mut hum_cluster,
+                                    &mut press_cluster,
+                                    &mut illum_cluster,
+                                    &mut power_cluster,
+                                    bme280_ok,
+                                    max44009_ok,
                                 )
                                 .await;
                             }
@@ -196,7 +229,18 @@ async fn main(_spawner: Spawner) {
             // ── Periodic sensor report ──────────────────────
             Either3::Third(_) => {
                 if device.is_joined() {
-                    report_sensors(&mut i2c, &mut device, bme280_ok, max44009_ok).await;
+                    report_sensors(
+                        &mut i2c,
+                        &mut adc,
+                        &mut temp_cluster,
+                        &mut hum_cluster,
+                        &mut press_cluster,
+                        &mut illum_cluster,
+                        &mut power_cluster,
+                        bme280_ok,
+                        max44009_ok,
+                    )
+                    .await;
                 }
                 if let TickResult::Event(ref e) =
                     device.tick(REPORT_INTERVAL_SECS as u16).await
@@ -208,12 +252,39 @@ async fn main(_spawner: Spawner) {
     }
 }
 
-async fn report_sensors<M: zigbee_mac::MacDriver>(
+/// Read all sensors and update ZCL cluster attribute values.
+async fn report_sensors(
     i2c: &mut Twim<'_, peripherals::TWISPI0>,
-    device: &mut ZigbeeDevice<M>,
+    adc: &mut Saadc<'_, 1>,
+    temp_cluster: &mut TemperatureCluster,
+    hum_cluster: &mut HumidityCluster,
+    press_cluster: &mut PressureCluster,
+    illum_cluster: &mut IlluminanceCluster,
+    power_cluster: &mut PowerConfigCluster,
     bme280_ok: bool,
     max44009_ok: bool,
 ) {
+    // ── Battery voltage via SAADC (VDD/3 internal) ──────
+    let mut buf = [0i16; 1];
+    adc.sample(&mut buf).await;
+    let raw = buf[0].max(0) as u32;
+    let battery_mv = (raw * BATTERY_SCALE_MV_NUM) / BATTERY_SCALE_MV_DEN;
+
+    // ZCL PowerConfig: BatteryVoltage in units of 100mV
+    let batt_voltage_zcl = (battery_mv / 100) as u8;
+    // Percentage: CR2032 range ~2.0V (empty) to 3.0V (full)
+    let batt_pct = if battery_mv >= 3000 {
+        200u8 // 100% in ZCL half-percent units
+    } else if battery_mv <= 2000 {
+        0u8
+    } else {
+        ((battery_mv - 2000) * 200 / 1000) as u8
+    };
+    power_cluster.set_battery_voltage(batt_voltage_zcl);
+    power_cluster.set_battery_percentage(batt_pct);
+    info!("Battery: {}mV ({}%)", battery_mv, batt_pct / 2);
+
+    // ── BME280: temperature, humidity, pressure ─────────
     if bme280_ok {
         if let Some(data) = bme280::read(i2c, BME280_ADDR).await {
             info!(
@@ -224,25 +295,27 @@ async fn report_sensors<M: zigbee_mac::MacDriver>(
                 data.humidity_centipct % 100,
                 data.pressure_hpa,
             );
-            device.set_attribute(1, 0x0402, 0x0000, data.temperature_centideg as u16);
-            device.set_attribute(1, 0x0405, 0x0000, data.humidity_centipct);
-            device.set_attribute(1, 0x0403, 0x0000, data.pressure_hpa);
+            temp_cluster.set_temperature(data.temperature_centideg);
+            hum_cluster.set_humidity(data.humidity_centipct);
+            press_cluster.set_pressure(data.pressure_hpa as i16);
         } else {
             warn!("BME280 read failed");
         }
     }
 
+    // ── MAX44009: illuminance ───────────────────────────
     if max44009_ok {
         if let Some(lux) = max44009::read_lux(i2c, MAX44009_ADDR).await {
+            // ZCL illuminance: 10000 * log10(lux) + 1, approx via log2
             let illum_zcl = if lux == 0 {
                 0u16
             } else {
                 let log2 = 31 - (lux as u32).leading_zeros();
-                let log10_x10000 = log2 * 3010; // ≈ 10000 * log10(x)
+                let log10_x10000 = log2 * 3010;
                 (log10_x10000 + 1) as u16
             };
             info!("{} lux → ZCL {}", lux, illum_zcl);
-            device.set_attribute(1, 0x0400, 0x0000, illum_zcl);
+            illum_cluster.set_illuminance(illum_zcl);
         } else {
             warn!("MAX44009 read failed");
         }
