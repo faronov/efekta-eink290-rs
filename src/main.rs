@@ -58,6 +58,8 @@ use zigbee_zcl::clusters::illuminance::IlluminanceCluster;
 use zigbee_zcl::clusters::power_config::PowerConfigCluster;
 use zigbee_zcl::clusters::pressure::PressureCluster;
 use zigbee_zcl::clusters::temperature::TemperatureCluster;
+use zigbee_zcl::clusters::Cluster;
+use zigbee_zcl::ClusterId;
 
 mod bme280;
 mod max44009;
@@ -193,7 +195,7 @@ async fn main(_spawner: Spawner) {
                             NetworkState::Joined => {
                                 info!("Short press → force report");
                                 led_flash(&mut led, 3).await;
-                                report_sensors(
+                                read_sensors(
                                     &mut i2c,
                                     &mut adc,
                                     &mut temp_cluster,
@@ -205,6 +207,43 @@ async fn main(_spawner: Spawner) {
                                     max44009_ok,
                                 )
                                 .await;
+                                // Force send reports for all clusters
+                                let ep = 1u8;
+                                device
+                                    .check_and_send_cluster_reports(
+                                        ep,
+                                        ClusterId::POWER_CONFIG.0,
+                                        power_cluster.attributes(),
+                                    )
+                                    .await;
+                                device
+                                    .check_and_send_cluster_reports(
+                                        ep,
+                                        ClusterId::TEMPERATURE.0,
+                                        temp_cluster.attributes(),
+                                    )
+                                    .await;
+                                device
+                                    .check_and_send_cluster_reports(
+                                        ep,
+                                        ClusterId::HUMIDITY.0,
+                                        hum_cluster.attributes(),
+                                    )
+                                    .await;
+                                device
+                                    .check_and_send_cluster_reports(
+                                        ep,
+                                        ClusterId::PRESSURE.0,
+                                        press_cluster.attributes(),
+                                    )
+                                    .await;
+                                device
+                                    .check_and_send_cluster_reports(
+                                        ep,
+                                        ClusterId::ILLUMINANCE.0,
+                                        illum_cluster.attributes(),
+                                    )
+                                    .await;
                             }
                             NetworkState::Joining => {
                                 info!("Already joining…");
@@ -228,8 +267,14 @@ async fn main(_spawner: Spawner) {
 
             // ── Periodic sensor report ──────────────────────
             Either3::Third(_) => {
+                // Tick reporting timers first
+                if let TickResult::Event(ref e) = device.tick(REPORT_INTERVAL_SECS as u16).await {
+                    handle_stack_event(e, &mut net_state, &mut led);
+                }
+
                 if device.is_joined() {
-                    report_sensors(
+                    // Read sensors and update cluster attributes
+                    read_sensors(
                         &mut i2c,
                         &mut adc,
                         &mut temp_cluster,
@@ -241,9 +286,44 @@ async fn main(_spawner: Spawner) {
                         max44009_ok,
                     )
                     .await;
-                }
-                if let TickResult::Event(ref e) = device.tick(REPORT_INTERVAL_SECS as u16).await {
-                    handle_stack_event(e, &mut net_state, &mut led);
+
+                    // Send ZCL attribute reports for each cluster (if configured)
+                    let ep = 1u8;
+                    device
+                        .check_and_send_cluster_reports(
+                            ep,
+                            ClusterId::POWER_CONFIG.0,
+                            power_cluster.attributes(),
+                        )
+                        .await;
+                    device
+                        .check_and_send_cluster_reports(
+                            ep,
+                            ClusterId::TEMPERATURE.0,
+                            temp_cluster.attributes(),
+                        )
+                        .await;
+                    device
+                        .check_and_send_cluster_reports(
+                            ep,
+                            ClusterId::HUMIDITY.0,
+                            hum_cluster.attributes(),
+                        )
+                        .await;
+                    device
+                        .check_and_send_cluster_reports(
+                            ep,
+                            ClusterId::PRESSURE.0,
+                            press_cluster.attributes(),
+                        )
+                        .await;
+                    device
+                        .check_and_send_cluster_reports(
+                            ep,
+                            ClusterId::ILLUMINANCE.0,
+                            illum_cluster.attributes(),
+                        )
+                        .await;
                 }
             }
         }
@@ -252,7 +332,7 @@ async fn main(_spawner: Spawner) {
 
 /// Read all sensors and update ZCL cluster attribute values.
 #[allow(clippy::too_many_arguments)]
-async fn report_sensors(
+async fn read_sensors(
     i2c: &mut Twim<'_, peripherals::TWISPI0>,
     adc: &mut Saadc<'_, 1>,
     temp_cluster: &mut TemperatureCluster,
