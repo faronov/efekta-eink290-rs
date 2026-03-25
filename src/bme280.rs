@@ -3,8 +3,8 @@
 //! Implements the Bosch BME280 compensation formulas from the datasheet.
 //! Uses forced mode (single-shot) to minimize power consumption.
 
-use embassy_nrf::twim::Twim;
 use embassy_nrf::peripherals;
+use embassy_nrf::twim::Twim;
 use embassy_time::{Duration, Timer};
 
 use defmt::*;
@@ -63,12 +63,20 @@ pub async fn init(i2c: &mut Twim<'_, peripherals::TWISPI0>, addr: u8) -> bool {
     }
 
     let mut calib_tp = [0u8; 26];
-    if i2c.write_read(addr, &[REG_CALIB_00], &mut calib_tp).await.is_err() {
+    if i2c
+        .write_read(addr, &[REG_CALIB_00], &mut calib_tp)
+        .await
+        .is_err()
+    {
         return false;
     }
 
     let mut calib_h = [0u8; 7];
-    if i2c.write_read(addr, &[REG_CALIB_26], &mut calib_h).await.is_err() {
+    if i2c
+        .write_read(addr, &[REG_CALIB_26], &mut calib_h)
+        .await
+        .is_err()
+    {
         return false;
     }
 
@@ -98,22 +106,25 @@ pub async fn init(i2c: &mut Twim<'_, peripherals::TWISPI0>, addr: u8) -> bool {
         dig_h6: calib_h[6] as i8,
     };
 
-    unsafe { CALIB = Some(cal); }
+    unsafe {
+        CALIB = Some(cal);
+    }
 
-    let _ = i2c.write(addr, &[REG_CTRL_HUM, 0b100]).await;     // humidity x8
-    let _ = i2c.write(addr, &[REG_CONFIG, 0b100_000_00]).await; // standby 500ms, filter off
+    let _ = i2c.write(addr, &[REG_CTRL_HUM, 0b100]).await; // humidity x8
+    let _ = i2c.write(addr, &[REG_CONFIG, 0b1000_0000]).await; // standby 500ms, filter off
 
     true
 }
 
-pub async fn read(
-    i2c: &mut Twim<'_, peripherals::TWISPI0>,
-    addr: u8,
-) -> Option<Bme280Data> {
-    let cal = unsafe { CALIB.as_ref()? };
+pub async fn read(i2c: &mut Twim<'_, peripherals::TWISPI0>, addr: u8) -> Option<Bme280Data> {
+    let cal = unsafe { (*core::ptr::addr_of!(CALIB)).as_ref()? };
 
     // Trigger forced mode: temp x8, press x8
-    if i2c.write(addr, &[REG_CTRL_MEAS, 0b100_100_01]).await.is_err() {
+    if i2c
+        .write(addr, &[REG_CTRL_MEAS, 0b1001_0001])
+        .await
+        .is_err()
+    {
         return None;
     }
 
@@ -121,14 +132,23 @@ pub async fn read(
 
     for _ in 0..10 {
         let mut status = [0u8];
-        if i2c.write_read(addr, &[REG_STATUS], &mut status).await.is_ok() {
-            if status[0] & 0x08 == 0 { break; }
+        if i2c
+            .write_read(addr, &[REG_STATUS], &mut status)
+            .await
+            .is_ok()
+            && status[0] & 0x08 == 0
+        {
+            break;
         }
         Timer::after(Duration::from_millis(10)).await;
     }
 
     let mut raw = [0u8; 8];
-    if i2c.write_read(addr, &[REG_DATA_START], &mut raw).await.is_err() {
+    if i2c
+        .write_read(addr, &[REG_DATA_START], &mut raw)
+        .await
+        .is_err()
+    {
         return None;
     }
 
@@ -148,10 +168,11 @@ pub async fn read(
 }
 
 fn compensate_temperature(cal: &Calibration, adc_t: i32) -> (i32, i32) {
-    let var1 = ((((adc_t >> 3) - ((cal.dig_t1 as i32) << 1))) * (cal.dig_t2 as i32)) >> 11;
-    let var2 = (((((adc_t >> 4) - (cal.dig_t1 as i32))
-        * ((adc_t >> 4) - (cal.dig_t1 as i32))) >> 12)
-        * (cal.dig_t3 as i32)) >> 14;
+    let var1 = (((adc_t >> 3) - ((cal.dig_t1 as i32) << 1)) * (cal.dig_t2 as i32)) >> 11;
+    let var2 = (((((adc_t >> 4) - (cal.dig_t1 as i32)) * ((adc_t >> 4) - (cal.dig_t1 as i32)))
+        >> 12)
+        * (cal.dig_t3 as i32))
+        >> 14;
     let t_fine = var1 + var2;
     let temp = (t_fine * 5 + 128) >> 8;
     (t_fine, temp)
@@ -162,10 +183,11 @@ fn compensate_pressure(cal: &Calibration, adc_p: i32, t_fine: i32) -> i32 {
     let mut var2 = var1 * var1 * (cal.dig_p6 as i64);
     var2 += (var1 * (cal.dig_p5 as i64)) << 17;
     var2 += (cal.dig_p4 as i64) << 35;
-    var1 = ((var1 * var1 * (cal.dig_p3 as i64)) >> 8)
-        + ((var1 * (cal.dig_p2 as i64)) << 12);
-    var1 = ((1i64 << 47) + var1) * (cal.dig_p1 as i64) >> 33;
-    if var1 == 0 { return 0; }
+    var1 = ((var1 * var1 * (cal.dig_p3 as i64)) >> 8) + ((var1 * (cal.dig_p2 as i64)) << 12);
+    var1 = (((1i64 << 47) + var1) * (cal.dig_p1 as i64)) >> 33;
+    if var1 == 0 {
+        return 0;
+    }
     let mut p: i64 = 1048576 - adc_p as i64;
     p = (((p << 31) - var2) * 3125) / var1;
     var1 = ((cal.dig_p9 as i64) * (p >> 13) * (p >> 13)) >> 25;
@@ -176,14 +198,20 @@ fn compensate_pressure(cal: &Calibration, adc_p: i32, t_fine: i32) -> i32 {
 
 fn compensate_humidity(cal: &Calibration, adc_h: i32, t_fine: i32) -> i32 {
     let mut var = t_fine - 76800i32;
-    if var == 0 { return 0; }
-    var = ((((adc_h << 14) - ((cal.dig_h4 as i32) << 20)
-        - ((cal.dig_h5 as i32) * var)) + 16384) >> 15)
+    if var == 0 {
+        return 0;
+    }
+    var = ((((adc_h << 14) - ((cal.dig_h4 as i32) << 20) - ((cal.dig_h5 as i32) * var)) + 16384)
+        >> 15)
         * (((((((var * (cal.dig_h6 as i32)) >> 10)
-            * (((var * (cal.dig_h3 as i32)) >> 11) + 32768)) >> 10)
-            + 2097152) * (cal.dig_h2 as i32) + 8192) >> 14);
+            * (((var * (cal.dig_h3 as i32)) >> 11) + 32768))
+            >> 10)
+            + 2097152)
+            * (cal.dig_h2 as i32)
+            + 8192)
+            >> 14);
     var -= ((((var >> 15) * (var >> 15)) >> 7) * (cal.dig_h1 as i32)) >> 4;
     var = var.clamp(0, 419430400);
-    let hum_1024 = (var >> 12) as i32;
+    let hum_1024 = var >> 12;
     ((hum_1024 * 100) / 1024).clamp(0, 10000)
 }

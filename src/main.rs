@@ -242,9 +242,7 @@ async fn main(_spawner: Spawner) {
                     )
                     .await;
                 }
-                if let TickResult::Event(ref e) =
-                    device.tick(REPORT_INTERVAL_SECS as u16).await
-                {
+                if let TickResult::Event(ref e) = device.tick(REPORT_INTERVAL_SECS as u16).await {
                     handle_stack_event(e, &mut net_state, &mut led);
                 }
             }
@@ -253,6 +251,7 @@ async fn main(_spawner: Spawner) {
 }
 
 /// Read all sensors and update ZCL cluster attribute values.
+#[allow(clippy::too_many_arguments)]
 async fn report_sensors(
     i2c: &mut Twim<'_, peripherals::TWISPI0>,
     adc: &mut Saadc<'_, 1>,
@@ -328,8 +327,15 @@ fn handle_stack_event(
     led: &mut gpio::Output<'_>,
 ) {
     match event {
-        StackEvent::Joined { short_address, channel, pan_id } => {
-            info!("Joined! 0x{:04X} ch={} pan=0x{:04X}", short_address, channel, pan_id);
+        StackEvent::Joined {
+            short_address,
+            channel,
+            pan_id,
+        } => {
+            info!(
+                "Joined! 0x{:04X} ch={} pan=0x{:04X}",
+                short_address, channel, pan_id
+            );
             *net_state = NetworkState::Joined;
             led.set_high(); // LED off (active low)
         }
