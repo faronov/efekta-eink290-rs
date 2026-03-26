@@ -250,18 +250,18 @@ async fn main(_spawner: Spawner) {
     info!("E-paper display ready");
 
     // ── Initialize sensors ──────────────────────────────────
-    let bme280_ok = bme280::init(&mut i2c, BME280_ADDR).await;
+    let mut bme280_ok = bme280::init(&mut i2c, BME280_ADDR).await;
     if bme280_ok {
         info!("BME280 ready");
     } else {
-        warn!("BME280 not found");
+        warn!("BME280 not found — will retry during sensor reads");
     }
 
-    let max44009_ok = max44009::init(&mut i2c, MAX44009_ADDR).await;
+    let mut max44009_ok = max44009::init(&mut i2c, MAX44009_ADDR).await;
     if max44009_ok {
         info!("MAX44009 ready");
     } else {
-        warn!("MAX44009 not found");
+        warn!("MAX44009 not found — will retry during sensor reads");
     }
 
     // ── 802.15.4 radio ──────────────────────────────────────
@@ -569,8 +569,8 @@ async fn main(_spawner: Spawner) {
                                     &mut press_cluster,
                                     &mut illum_cluster,
                                     &mut power_cluster,
-                                    bme280_ok,
-                                    max44009_ok,
+                                    &mut bme280_ok,
+                                    &mut max44009_ok,
                                 )
                                 .await;
                                 // Force send reports for all clusters
@@ -732,8 +732,8 @@ async fn main(_spawner: Spawner) {
                         &mut press_cluster,
                         &mut illum_cluster,
                         &mut power_cluster,
-                        bme280_ok,
-                        max44009_ok,
+                        &mut bme280_ok,
+                        &mut max44009_ok,
                     )
                     .await;
 
@@ -840,8 +840,8 @@ async fn read_sensors(
     press_cluster: &mut PressureCluster,
     illum_cluster: &mut IlluminanceCluster,
     power_cluster: &mut PowerConfigCluster,
-    bme280_ok: bool,
-    max44009_ok: bool,
+    bme280_ok: &mut bool,
+    max44009_ok: &mut bool,
 ) -> display::DisplayData {
     // ── Battery voltage via SAADC (VDD/3 internal) ──────
     let mut buf = [0i16; 1];
@@ -877,7 +877,14 @@ async fn read_sensors(
     };
 
     // ── BME280: temperature, humidity, pressure ─────────
-    if bme280_ok {
+    if !*bme280_ok {
+        // Retry init — sensor may have recovered
+        *bme280_ok = bme280::init(i2c, BME280_ADDR).await;
+        if *bme280_ok {
+            info!("BME280 recovered on retry");
+        }
+    }
+    if *bme280_ok {
         if let Some(data) = bme280::read(i2c, BME280_ADDR).await {
             info!(
                 "T={}.{:02}°C H={}.{:02}% P={}hPa",
@@ -900,7 +907,14 @@ async fn read_sensors(
     }
 
     // ── MAX44009: illuminance ───────────────────────────
-    if max44009_ok {
+    if !*max44009_ok {
+        // Retry init — sensor may have recovered
+        *max44009_ok = max44009::init(i2c, MAX44009_ADDR).await;
+        if *max44009_ok {
+            info!("MAX44009 recovered on retry");
+        }
+    }
+    if *max44009_ok {
         if let Some(lux) = max44009::read_lux(i2c, MAX44009_ADDR).await {
             // ZCL illuminance: 10000 * log10(lux) + 1, approx via log2
             let illum_zcl = if lux == 0 {
@@ -1005,6 +1019,14 @@ fn handle_ota_event(event: &StackEvent) {
         }
         StackEvent::OtaFailed => {
             error!("OTA: failed");
+        }
+        StackEvent::OtaDelayedActivation { delay_secs } => {
+            info!("OTA: server requested delayed activation in {} seconds", delay_secs);
+            // Schedule a delayed reboot — use a spawned task or just reboot after delay.
+            // For simplicity, reboot immediately since we can't easily spawn here.
+            // A production implementation would set a timer and reboot later.
+            info!("OTA: rebooting now (delayed activation not supported, applying immediately)");
+            cortex_m::peripheral::SCB::sys_reset();
         }
         _ => {}
     }
