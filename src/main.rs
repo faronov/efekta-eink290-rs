@@ -379,6 +379,9 @@ async fn main(_spawner: Spawner) {
     let mut rejoin_backoff_secs: u32 = 0;  // 0 = no auto-rejoin pending
     let mut rejoin_countdown: u32 = 0;     // seconds until next rejoin attempt
     let mut pressure_history = PressureHistory::new();
+    let mut prev_temperature: i16 = 0;    // previous cycle temperature (centideg)
+    let mut colon_toggle: bool = true;     // alternates each display update
+    let mut uptime_secs: u64 = 0;         // monotonic uptime counter
 
     info!("Ready — short press to join, long press (5s) for factory reset");
 
@@ -435,6 +438,10 @@ async fn main(_spawner: Spawner) {
                         rejoin_countdown = 30;
                         info!("Auto-rejoin armed: 30s");
                     }
+                    // Coordinator-triggered factory reset: proper leave + reset
+                    if matches!(event, StackEvent::FactoryResetRequested) {
+                        device.user_action(UserAction::FactoryReset);
+                    }
                 }
             }
             Either3::First(Err(_)) => warn!("MAC receive error"),
@@ -447,12 +454,12 @@ async fn main(_spawner: Spawner) {
                     let press_ms = start.elapsed().as_millis();
 
                     if press_ms >= LONG_PRESS_MS {
-                        info!("Long press → factory reset + pair");
+                        info!("Long press → factory reset");
                         led_flash(&mut led, 5).await;
-                        net_state = NetworkState::Joining;
-                        device.user_action(UserAction::Toggle);
-                        // second toggle re-starts commissioning
-                        device.user_action(UserAction::Toggle);
+                        // FactoryReset properly leaves network, resets NWK state,
+                        // then fires StackEvent::Left so we can rejoin fresh.
+                        device.user_action(UserAction::FactoryReset);
+                        net_state = NetworkState::Initial;
                     } else if press_ms >= 50 {
                         match net_state {
                             NetworkState::Joined => {
@@ -491,6 +498,12 @@ async fn main(_spawner: Spawner) {
                                 // Update e-paper display
                                 disp_data.joined = net_state == NetworkState::Joined;
                                 disp_data.pressure_history_len = pressure_history.to_display(&mut disp_data.pressure_history);
+                                disp_data.prev_temperature_centideg = prev_temperature;
+                                disp_data.colon_on = colon_toggle;
+                                let uptime_mins = (uptime_secs / 60) as u16;
+                                disp_data.time_hour = (uptime_mins / 60 % 24) as u8;
+                                disp_data.time_minute = (uptime_mins % 60) as u8;
+                                prev_temperature = disp_data.temperature_centideg;
                                 #[cfg(not(feature = "uart-debug"))]
                                 {
                                     epd.wake().await;
@@ -605,6 +618,16 @@ async fn main(_spawner: Spawner) {
 
                     // Update e-paper display
                     disp_data.joined = true;
+                    // Wire temperature trend and uptime clock
+                    disp_data.prev_temperature_centideg = prev_temperature;
+                    disp_data.colon_on = colon_toggle;
+                    uptime_secs += REPORT_INTERVAL_SECS;
+                    let uptime_mins = (uptime_secs / 60) as u16;
+                    disp_data.time_hour = (uptime_mins / 60 % 24) as u8;
+                    disp_data.time_minute = (uptime_mins % 60) as u8;
+                    // Update state for next cycle
+                    prev_temperature = disp_data.temperature_centideg;
+                    colon_toggle = !colon_toggle;
                     #[cfg(not(feature = "uart-debug"))]
                     {
                         epd.wake().await;
@@ -681,8 +704,8 @@ async fn read_sensors(
         time_minute: 0,
         date_day: 0,
         date_month: 0,
-        prev_temperature_centideg: 0, // TODO: persist across cycles
-        colon_on: true,               // TODO: toggle each cycle
+        prev_temperature_centideg: 0,
+        colon_on: true,
     };
 
     // ── BME280: temperature, humidity, pressure ─────────
@@ -779,10 +802,10 @@ fn handle_stack_event(
         }
         StackEvent::FactoryResetRequested => {
             info!("Factory reset requested by coordinator!");
-            // Leave network, clear state, reboot
+            // Signal the caller to trigger UserAction::FactoryReset
+            // (the actual reset is handled inline in the event loop)
             *net_state = NetworkState::Initial;
             led.set_low();
-            cortex_m::peripheral::SCB::sys_reset();
         }
         StackEvent::CommissioningComplete { success } => {
             if *success {

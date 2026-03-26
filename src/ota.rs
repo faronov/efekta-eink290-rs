@@ -111,25 +111,46 @@ impl<'d> FirmwareWriter for NrfFirmwareWriter<'d> {
         if expected_size > DFU_SIZE {
             return Err(FirmwareError::ImageTooLarge);
         }
-        // Basic check: read first 4 bytes to verify non-empty (should be stack pointer)
-        let mut buf = [0u8; 4];
+        // Read vector table: first 8 bytes = initial SP + reset handler
+        let mut buf = [0u8; 8];
         self.nvmc
             .read(DFU_START, &mut buf)
             .map_err(|_| FirmwareError::VerifyFailed)?;
+
         // Stack pointer should be in RAM range (0x2000_0000..0x2004_0000)
-        let sp = u32::from_le_bytes(buf);
+        let sp = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         if !(0x2000_0000..=0x2004_0000).contains(&sp) {
             return Err(FirmwareError::VerifyFailed);
         }
+
+        // Reset vector should point into ACTIVE flash range (0x0000_7000..0x0007_C000)
+        // since the image will be swapped there by the bootloader
+        let reset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        if !(0x0000_7000..0x0007_C000).contains(&reset) {
+            return Err(FirmwareError::VerifyFailed);
+        }
+
+        // Spot-check: read a block near the end of the image to verify flash isn't erased
+        if expected_size > 8 {
+            let check_offset = (expected_size - 4) & !3; // 4-byte aligned
+            let mut tail = [0u8; 4];
+            self.nvmc
+                .read(DFU_START + check_offset, &mut tail)
+                .map_err(|_| FirmwareError::VerifyFailed)?;
+            // All 0xFF means flash was never written here
+            if tail == [0xFF; 4] {
+                return Err(FirmwareError::VerifyFailed);
+            }
+        }
+
         Ok(())
     }
 
     fn activate(&mut self) -> Result<(), FirmwareError> {
         // Write swap magic to bootloader state partition.
-        // embassy-boot expects the state partition to contain SWAP_MAGIC (0x01)
-        // to trigger a swap on next boot.
+        // embassy-boot 0.4 expects all bytes of the state word to be SWAP_MAGIC (0xF0).
         //
-        // First erase the state page, then write the magic byte.
+        // First erase the state page, then write the magic word.
         self.nvmc
             .erase(STATE_START, STATE_START + PAGE_SIZE)
             .map_err(|_| FirmwareError::ActivateFailed)?;
