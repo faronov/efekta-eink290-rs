@@ -65,12 +65,14 @@ use zigbee_aps::PROFILE_HOME_AUTOMATION;
 use zigbee_nwk::DeviceType;
 use zigbee_runtime::event_loop::{StackEvent, TickResult};
 use zigbee_runtime::ota::{OtaConfig, OtaManager};
+use zigbee_runtime::power::PowerMode;
 use zigbee_runtime::{ClusterRef, UserAction, ZigbeeDevice};
 use zigbee_zcl::clusters::basic::BasicCluster;
 use zigbee_zcl::clusters::humidity::HumidityCluster;
 use zigbee_zcl::clusters::identify::IdentifyCluster;
 use zigbee_zcl::clusters::illuminance::IlluminanceCluster;
 use zigbee_zcl::clusters::power_config::PowerConfigCluster;
+use zigbee_zcl::clusters::poll_control::PollControlCluster;
 use zigbee_zcl::clusters::pressure::PressureCluster;
 use zigbee_zcl::clusters::temperature::TemperatureCluster;
 
@@ -85,6 +87,7 @@ mod paint;
 mod ssd1680;
 
 const REPORT_INTERVAL_SECS: u64 = 60;
+const POLL_INTERVAL_MS: u64 = 6000; // MAC poll every 6 seconds (matches long poll interval)
 const LONG_PRESS_MS: u64 = 5000;
 const BME280_ADDR: u8 = 0x77;
 const MAX44009_ADDR: u8 = 0x4A;
@@ -301,8 +304,9 @@ async fn main(_spawner: Spawner) {
     power_cluster.set_battery_quantity(2);
     power_cluster.set_battery_rated_voltage(12); // 1.2V per cell
     power_cluster.set_battery_voltage_min_threshold(20); // 2.0V total cutoff
+    let mut poll_control_cluster = PollControlCluster::new();
 
-    // ── Zigbee device: endpoint 1 with 8 server clusters ────
+    // ── Zigbee device: endpoint 1 with sensor + poll control clusters ──
     let mut device = ZigbeeDevice::builder(mac)
         .device_type(DeviceType::EndDevice)
         .manufacturer("Efekta")
@@ -310,10 +314,15 @@ async fn main(_spawner: Spawner) {
         .sw_build(concat!(env!("CARGO_PKG_VERSION"), "-rs"))
         .date_code(env!("BUILD_DATE"))
         .channels(zigbee_types::ChannelMask::ALL_2_4GHZ)
+        .power_mode(PowerMode::Sleepy {
+            poll_interval_ms: POLL_INTERVAL_MS as u32,
+            wake_duration_ms: 1000,
+        })
         .endpoint(1, PROFILE_HOME_AUTOMATION, 0x0302, |ep| {
             ep.cluster_server(0x0000) // Basic
                 .cluster_server(0x0003) // Identify
                 .cluster_server(0x0001) // Power Configuration
+                .cluster_server(0x0020) // Poll Control
                 .cluster_server(0x0402) // Temperature Measurement
                 .cluster_server(0x0405) // Relative Humidity
                 .cluster_server(0x0403) // Pressure Measurement
@@ -454,93 +463,109 @@ async fn main(_spawner: Spawner) {
 
     info!("Ready — short press to join, long press (5s) for factory reset");
 
-    // ── Main event loop ─────────────────────────────────────
+    // Helper: process a polled frame through the stack, handling events/OTA.
+    macro_rules! poll_and_process {
+        ($device:ident, $basic:ident, $identify:ident, $power:ident, $poll_ctrl:ident,
+         $temp:ident, $hum:ident, $press:ident, $illum:ident,
+         $ota_mgr:ident, $net_state:ident, $led:ident, $buzzer:ident,
+         $ota_query_countdown:ident, $rejoin_backoff_secs:ident, $rejoin_countdown:ident) => {{
+            let mut got_data = false;
+            // Poll parent — drain up to 4 pending frames per cycle
+            for _ in 0..4u8 {
+                match $device.poll().await {
+                    Ok(Some(indication)) => {
+                        got_data = true;
+                        let mut clusters = [
+                            ClusterRef { endpoint: 1, cluster: &mut $basic },
+                            ClusterRef { endpoint: 1, cluster: &mut $identify },
+                            ClusterRef { endpoint: 1, cluster: &mut $power },
+                            ClusterRef { endpoint: 1, cluster: &mut $poll_ctrl },
+                            ClusterRef { endpoint: 1, cluster: &mut $temp },
+                            ClusterRef { endpoint: 1, cluster: &mut $hum },
+                            ClusterRef { endpoint: 1, cluster: &mut $press },
+                            ClusterRef { endpoint: 1, cluster: &mut $illum },
+                        ];
+                        if let Some(event) = $device.process_incoming(&indication, &mut clusters).await {
+                            if $identify.is_identifying() {
+                                buzzer_chirp(&mut $buzzer).await;
+                            }
+                            // OTA routing
+                            if let StackEvent::CommandReceived {
+                                cluster_id: 0x0019,
+                                command_id,
+                                ref payload,
+                                ..
+                            } = event
+                            {
+                                if let Some(evt) = $ota_mgr.handle_incoming(command_id, payload.as_slice()) {
+                                    handle_ota_event(&evt);
+                                }
+                                send_ota_pending(&mut $device, &mut $ota_mgr).await;
+                                if let Some(evt) = $ota_mgr.tick(0) {
+                                    handle_ota_event(&evt);
+                                }
+                                send_ota_pending(&mut $device, &mut $ota_mgr).await;
+                            }
+                            handle_stack_event(&event, &mut $net_state, &mut $led, &mut $buzzer).await;
+                            if matches!(event, StackEvent::Joined { .. }) {
+                                $ota_query_countdown = 30;
+                                $rejoin_backoff_secs = 0;
+                                $rejoin_countdown = 0;
+                            }
+                            if matches!(event, StackEvent::Left) {
+                                $rejoin_backoff_secs = 30;
+                                $rejoin_countdown = 30;
+                                info!("Auto-rejoin armed: 30s");
+                            }
+                            if matches!(event, StackEvent::FactoryResetRequested) {
+                                $device.user_action(UserAction::FactoryReset);
+                            }
+                        }
+                    }
+                    Ok(None) => break, // no more pending data
+                    Err(_) => { warn!("Poll error"); break; }
+                }
+            }
+            got_data
+        }};
+    }
+
+    // ── Main event loop (SED: poll-based, radio off between polls) ───
     loop {
         match select3(
-            device.receive(),
+            Timer::after(Duration::from_millis(POLL_INTERVAL_MS)),
             button.wait_for_any_edge(),
             Timer::after(Duration::from_secs(REPORT_INTERVAL_SECS)),
         )
         .await
         {
-            // ── Incoming MAC frame ──────────────────────────
-            Either3::First(Ok(indication)) => {
-                let mut clusters = [
-                    ClusterRef {
-                        endpoint: 1,
-                        cluster: &mut basic_cluster,
-                    },
-                    ClusterRef {
-                        endpoint: 1,
-                        cluster: &mut identify_cluster,
-                    },
-                    ClusterRef {
-                        endpoint: 1,
-                        cluster: &mut power_cluster,
-                    },
-                    ClusterRef {
-                        endpoint: 1,
-                        cluster: &mut temp_cluster,
-                    },
-                    ClusterRef {
-                        endpoint: 1,
-                        cluster: &mut hum_cluster,
-                    },
-                    ClusterRef {
-                        endpoint: 1,
-                        cluster: &mut press_cluster,
-                    },
-                    ClusterRef {
-                        endpoint: 1,
-                        cluster: &mut illum_cluster,
-                    },
-                ];
-                if let Some(event) = device.process_incoming(&indication, &mut clusters).await {
-                    // Check identify state change after command dispatch
-                    if identify_cluster.is_identifying() {
-                        buzzer_chirp(&mut buzzer).await;
-                    }
-
-                    // ── OTA: route cluster 0x0019 commands to OtaManager ──
-                    if let StackEvent::CommandReceived {
-                        cluster_id: 0x0019,
-                        command_id,
-                        ref payload,
-                        ..
-                    } = event
-                    {
-                        if let Some(evt) = ota_mgr.handle_incoming(command_id, payload.as_slice()) {
-                            handle_ota_event(&evt);
-                        }
-                        // Immediately send any OTA response frame (block request, etc.)
-                        send_ota_pending(&mut device, &mut ota_mgr).await;
-                        // OTA tick for pending block writes → next block request
-                        if let Some(evt) = ota_mgr.tick(0) {
-                            handle_ota_event(&evt);
-                        }
-                        send_ota_pending(&mut device, &mut ota_mgr).await;
-                    }
-
-                    handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer).await;
-                    // Start OTA check shortly after joining
-                    if matches!(event, StackEvent::Joined { .. }) {
-                        ota_query_countdown = 30; // query in 30 seconds
-                        rejoin_backoff_secs = 0; // cancel any pending rejoin
-                        rejoin_countdown = 0;
-                    }
-                    // Arm auto-rejoin on network leave
-                    if matches!(event, StackEvent::Left) {
-                        rejoin_backoff_secs = 30;
-                        rejoin_countdown = 30;
-                        info!("Auto-rejoin armed: 30s");
-                    }
-                    // Coordinator-triggered factory reset: proper leave + reset
-                    if matches!(event, StackEvent::FactoryResetRequested) {
-                        device.user_action(UserAction::FactoryReset);
+            // ── Poll timer: ask parent for pending data ─────
+            Either3::First(_) => {
+                if device.is_joined() {
+                    poll_and_process!(
+                        device, basic_cluster, identify_cluster, power_cluster,
+                        poll_control_cluster, temp_cluster, hum_cluster, press_cluster,
+                        illum_cluster, ota_mgr, net_state, led, buzzer,
+                        ota_query_countdown, rejoin_backoff_secs, rejoin_countdown
+                    );
+                }
+                // Tick the stack (process pending actions like join/leave)
+                {
+                    let mut clusters = [
+                        ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut power_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut poll_control_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut press_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                    ];
+                    if let TickResult::Event(ref e) = device.tick(0, &mut clusters).await {
+                        handle_stack_event(e, &mut net_state, &mut led, &mut buzzer).await;
                     }
                 }
             }
-            Either3::First(Err(_)) => warn!("MAC receive error"),
 
             // ── Button edge ─────────────────────────────────
             Either3::Second(_) => {
@@ -576,34 +601,14 @@ async fn main(_spawner: Spawner) {
                                 // Force send reports for all clusters
                                 {
                                     let mut clusters = [
-                                        ClusterRef {
-                                            endpoint: 1,
-                                            cluster: &mut basic_cluster,
-                                        },
-                                        ClusterRef {
-                                            endpoint: 1,
-                                            cluster: &mut identify_cluster,
-                                        },
-                                        ClusterRef {
-                                            endpoint: 1,
-                                            cluster: &mut power_cluster,
-                                        },
-                                        ClusterRef {
-                                            endpoint: 1,
-                                            cluster: &mut temp_cluster,
-                                        },
-                                        ClusterRef {
-                                            endpoint: 1,
-                                            cluster: &mut hum_cluster,
-                                        },
-                                        ClusterRef {
-                                            endpoint: 1,
-                                            cluster: &mut press_cluster,
-                                        },
-                                        ClusterRef {
-                                            endpoint: 1,
-                                            cluster: &mut illum_cluster,
-                                        },
+                                        ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut power_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut poll_control_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut press_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
                                     ];
                                     if let TickResult::Event(ref e) =
                                         device.tick(0, &mut clusters).await
@@ -655,34 +660,14 @@ async fn main(_spawner: Spawner) {
 
                 {
                     let mut clusters = [
-                        ClusterRef {
-                            endpoint: 1,
-                            cluster: &mut basic_cluster,
-                        },
-                        ClusterRef {
-                            endpoint: 1,
-                            cluster: &mut identify_cluster,
-                        },
-                        ClusterRef {
-                            endpoint: 1,
-                            cluster: &mut power_cluster,
-                        },
-                        ClusterRef {
-                            endpoint: 1,
-                            cluster: &mut temp_cluster,
-                        },
-                        ClusterRef {
-                            endpoint: 1,
-                            cluster: &mut hum_cluster,
-                        },
-                        ClusterRef {
-                            endpoint: 1,
-                            cluster: &mut press_cluster,
-                        },
-                        ClusterRef {
-                            endpoint: 1,
-                            cluster: &mut illum_cluster,
-                        },
+                        ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut power_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut poll_control_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut press_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
                     ];
                     if let TickResult::Event(ref e) = device.tick(0, &mut clusters).await {
                         handle_stack_event(e, &mut net_state, &mut led, &mut buzzer).await;
@@ -747,34 +732,14 @@ async fn main(_spawner: Spawner) {
                     // Tick reporting engine — automatically sends due reports
                     {
                         let mut clusters = [
-                            ClusterRef {
-                                endpoint: 1,
-                                cluster: &mut basic_cluster,
-                            },
-                            ClusterRef {
-                                endpoint: 1,
-                                cluster: &mut identify_cluster,
-                            },
-                            ClusterRef {
-                                endpoint: 1,
-                                cluster: &mut power_cluster,
-                            },
-                            ClusterRef {
-                                endpoint: 1,
-                                cluster: &mut temp_cluster,
-                            },
-                            ClusterRef {
-                                endpoint: 1,
-                                cluster: &mut hum_cluster,
-                            },
-                            ClusterRef {
-                                endpoint: 1,
-                                cluster: &mut press_cluster,
-                            },
-                            ClusterRef {
-                                endpoint: 1,
-                                cluster: &mut illum_cluster,
-                            },
+                            ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut power_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut poll_control_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut press_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
                         ];
                         if let TickResult::Event(ref e) = device
                             .tick(REPORT_INTERVAL_SECS as u16, &mut clusters)
@@ -823,6 +788,14 @@ async fn main(_spawner: Spawner) {
                     } else {
                         ota_query_countdown -= REPORT_INTERVAL_SECS as u32;
                     }
+
+                    // Poll parent after sending reports to pick up any responses
+                    poll_and_process!(
+                        device, basic_cluster, identify_cluster, power_cluster,
+                        poll_control_cluster, temp_cluster, hum_cluster, press_cluster,
+                        illum_cluster, ota_mgr, net_state, led, buzzer,
+                        ota_query_countdown, rejoin_backoff_secs, rejoin_countdown
+                    );
                 }
             }
         }
