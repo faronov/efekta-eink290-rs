@@ -101,7 +101,12 @@ struct PressureHistory {
 
 impl PressureHistory {
     const fn new() -> Self {
-        Self { buf: [0; PRESSURE_HISTORY_SIZE], len: 0, idx: 0, ticks_since_store: 0 }
+        Self {
+            buf: [0; PRESSURE_HISTORY_SIZE],
+            len: 0,
+            idx: 0,
+            ticks_since_store: 0,
+        }
     }
 
     /// Record a pressure reading. Stores one sample per hour.
@@ -121,14 +126,16 @@ impl PressureHistory {
     /// Copy history to display format (oldest first).
     fn to_display(&self, out: &mut [u16; PRESSURE_HISTORY_SIZE]) -> u8 {
         let len = self.len as usize;
-        if len == 0 { return 0; }
+        if len == 0 {
+            return 0;
+        }
         let start = if len < PRESSURE_HISTORY_SIZE {
             0
         } else {
             self.idx as usize
         };
-        for i in 0..len {
-            out[i] = self.buf[(start + i) % PRESSURE_HISTORY_SIZE];
+        for (i, slot) in out.iter_mut().enumerate().take(len) {
+            *slot = self.buf[(start + i) % PRESSURE_HISTORY_SIZE];
         }
         self.len
     }
@@ -218,7 +225,9 @@ async fn main(_spawner: Spawner) {
     #[cfg(feature = "uart-debug")]
     {
         use embedded_io_async::Write;
-        let _ = uart.write_all(b"\r\n=== Efekta E-Ink 290 UART debug ===\r\n").await;
+        let _ = uart
+            .write_all(b"\r\n=== Efekta E-Ink 290 UART debug ===\r\n")
+            .await;
         info!("UART debug active on TX=P0.09 115200");
     }
 
@@ -316,72 +325,132 @@ async fn main(_spawner: Spawner) {
     // ── Default reporting thresholds ────────────────────────
     // These are initial defaults; coordinator can override via Configure Reporting (0x06).
     {
-        use zigbee_zcl::foundation::reporting::{ReportDirection, ReportingConfig};
         use zigbee_zcl::data_types::{ZclDataType, ZclValue};
+        use zigbee_zcl::foundation::reporting::{ReportDirection, ReportingConfig};
         use zigbee_zcl::AttributeId;
 
         let rpt = device.reporting_mut();
 
         // Temperature: report on ±0.25°C change (25 centidegrees), 30-900s
-        if rpt.configure_for_cluster(1, 0x0402, ReportingConfig {
-            direction: ReportDirection::Send,
-            attribute_id: AttributeId(0x0000),
-            data_type: ZclDataType::I16,
-            min_interval: 30, max_interval: 900,
-            reportable_change: Some(ZclValue::I16(25)),
-        }).is_err() { defmt::warn!("Reporting config failed"); }
+        if rpt
+            .configure_for_cluster(
+                1,
+                0x0402,
+                ReportingConfig {
+                    direction: ReportDirection::Send,
+                    attribute_id: AttributeId(0x0000),
+                    data_type: ZclDataType::I16,
+                    min_interval: 30,
+                    max_interval: 900,
+                    reportable_change: Some(ZclValue::I16(25)),
+                },
+            )
+            .is_err()
+        {
+            defmt::warn!("Reporting config failed");
+        }
         // Humidity: report on ±0.5% change (50 centipercent), 30-1200s
-        if rpt.configure_for_cluster(1, 0x0405, ReportingConfig {
-            direction: ReportDirection::Send,
-            attribute_id: AttributeId(0x0000),
-            data_type: ZclDataType::U16,
-            min_interval: 30, max_interval: 1200,
-            reportable_change: Some(ZclValue::U16(50)),
-        }).is_err() { defmt::warn!("Reporting config failed"); }
+        if rpt
+            .configure_for_cluster(
+                1,
+                0x0405,
+                ReportingConfig {
+                    direction: ReportDirection::Send,
+                    attribute_id: AttributeId(0x0000),
+                    data_type: ZclDataType::U16,
+                    min_interval: 30,
+                    max_interval: 1200,
+                    reportable_change: Some(ZclValue::U16(50)),
+                },
+            )
+            .is_err()
+        {
+            defmt::warn!("Reporting config failed");
+        }
         // Pressure: report on ±1 hPa change (1 in hPa units), 60-1800s
-        if rpt.configure_for_cluster(1, 0x0403, ReportingConfig {
-            direction: ReportDirection::Send,
-            attribute_id: AttributeId(0x0000),
-            data_type: ZclDataType::I16,
-            min_interval: 60, max_interval: 1800,
-            reportable_change: Some(ZclValue::I16(1)),
-        }).is_err() { defmt::warn!("Reporting config failed"); }
+        if rpt
+            .configure_for_cluster(
+                1,
+                0x0403,
+                ReportingConfig {
+                    direction: ReportDirection::Send,
+                    attribute_id: AttributeId(0x0000),
+                    data_type: ZclDataType::I16,
+                    min_interval: 60,
+                    max_interval: 1800,
+                    reportable_change: Some(ZclValue::I16(1)),
+                },
+            )
+            .is_err()
+        {
+            defmt::warn!("Reporting config failed");
+        }
         // Illuminance: report on ~50 lux change (5000 ZCL units), 60-300s
-        if rpt.configure_for_cluster(1, 0x0400, ReportingConfig {
-            direction: ReportDirection::Send,
-            attribute_id: AttributeId(0x0000),
-            data_type: ZclDataType::U16,
-            min_interval: 60, max_interval: 300,
-            reportable_change: Some(ZclValue::U16(5000)),
-        }).is_err() { defmt::warn!("Reporting config failed"); }
+        if rpt
+            .configure_for_cluster(
+                1,
+                0x0400,
+                ReportingConfig {
+                    direction: ReportDirection::Send,
+                    attribute_id: AttributeId(0x0000),
+                    data_type: ZclDataType::U16,
+                    min_interval: 60,
+                    max_interval: 300,
+                    reportable_change: Some(ZclValue::U16(5000)),
+                },
+            )
+            .is_err()
+        {
+            defmt::warn!("Reporting config failed");
+        }
         // Battery %: report on ±1% (2 in 0-200 range), 300-3600s
-        if rpt.configure_for_cluster(1, 0x0001, ReportingConfig {
-            direction: ReportDirection::Send,
-            attribute_id: AttributeId(0x0021),
-            data_type: ZclDataType::U8,
-            min_interval: 300, max_interval: 3600,
-            reportable_change: Some(ZclValue::U8(2)),
-        }).is_err() { defmt::warn!("Reporting config failed"); }
+        if rpt
+            .configure_for_cluster(
+                1,
+                0x0001,
+                ReportingConfig {
+                    direction: ReportDirection::Send,
+                    attribute_id: AttributeId(0x0021),
+                    data_type: ZclDataType::U8,
+                    min_interval: 300,
+                    max_interval: 3600,
+                    reportable_change: Some(ZclValue::U8(2)),
+                },
+            )
+            .is_err()
+        {
+            defmt::warn!("Reporting config failed");
+        }
         // Battery voltage: report on ±100mV, 300-3600s
-        if rpt.configure_for_cluster(1, 0x0001, ReportingConfig {
-            direction: ReportDirection::Send,
-            attribute_id: AttributeId(0x0020),
-            data_type: ZclDataType::U8,
-            min_interval: 300, max_interval: 3600,
-            reportable_change: Some(ZclValue::U8(1)),
-        }).is_err() { defmt::warn!("Reporting config failed"); }
+        if rpt
+            .configure_for_cluster(
+                1,
+                0x0001,
+                ReportingConfig {
+                    direction: ReportDirection::Send,
+                    attribute_id: AttributeId(0x0020),
+                    data_type: ZclDataType::U8,
+                    min_interval: 300,
+                    max_interval: 3600,
+                    reportable_change: Some(ZclValue::U8(1)),
+                },
+            )
+            .is_err()
+        {
+            defmt::warn!("Reporting config failed");
+        }
     }
 
     let mut net_state = NetworkState::Initial;
     let mut button_press_start: Option<Instant> = None;
     let mut ota_query_countdown: u32 = 0; // seconds until next OTA query
     const OTA_QUERY_INTERVAL: u32 = 86400; // 24 hours
-    let mut rejoin_backoff_secs: u32 = 0;  // 0 = no auto-rejoin pending
-    let mut rejoin_countdown: u32 = 0;     // seconds until next rejoin attempt
+    let mut rejoin_backoff_secs: u32 = 0; // 0 = no auto-rejoin pending
+    let mut rejoin_countdown: u32 = 0; // seconds until next rejoin attempt
     let mut pressure_history = PressureHistory::new();
-    let mut prev_temperature: i16 = 0;    // previous cycle temperature (centideg)
-    let mut colon_toggle: bool = true;     // alternates each display update
-    let mut uptime_secs: u64 = 0;         // monotonic uptime counter
+    let mut prev_temperature: i16 = 0; // previous cycle temperature (centideg)
+    let mut colon_toggle: bool = true; // alternates each display update
+    let mut uptime_secs: u64 = 0; // monotonic uptime counter
 
     info!("Ready — short press to join, long press (5s) for factory reset");
 
@@ -397,22 +466,49 @@ async fn main(_spawner: Spawner) {
             // ── Incoming MAC frame ──────────────────────────
             Either3::First(Ok(indication)) => {
                 let mut clusters = [
-                    ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
-                    ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
-                    ClusterRef { endpoint: 1, cluster: &mut power_cluster },
-                    ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
-                    ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
-                    ClusterRef { endpoint: 1, cluster: &mut press_cluster },
-                    ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                    ClusterRef {
+                        endpoint: 1,
+                        cluster: &mut basic_cluster,
+                    },
+                    ClusterRef {
+                        endpoint: 1,
+                        cluster: &mut identify_cluster,
+                    },
+                    ClusterRef {
+                        endpoint: 1,
+                        cluster: &mut power_cluster,
+                    },
+                    ClusterRef {
+                        endpoint: 1,
+                        cluster: &mut temp_cluster,
+                    },
+                    ClusterRef {
+                        endpoint: 1,
+                        cluster: &mut hum_cluster,
+                    },
+                    ClusterRef {
+                        endpoint: 1,
+                        cluster: &mut press_cluster,
+                    },
+                    ClusterRef {
+                        endpoint: 1,
+                        cluster: &mut illum_cluster,
+                    },
                 ];
                 if let Some(event) = device.process_incoming(&indication, &mut clusters).await {
                     // Check identify state change after command dispatch
                     if identify_cluster.is_identifying() {
-                        buzzer_chirp(&mut buzzer);
+                        buzzer_chirp(&mut buzzer).await;
                     }
 
                     // ── OTA: route cluster 0x0019 commands to OtaManager ──
-                    if let StackEvent::CommandReceived { cluster_id: 0x0019, command_id, ref payload, .. } = event {
+                    if let StackEvent::CommandReceived {
+                        cluster_id: 0x0019,
+                        command_id,
+                        ref payload,
+                        ..
+                    } = event
+                    {
                         if let Some(evt) = ota_mgr.handle_incoming(command_id, payload.as_slice()) {
                             handle_ota_event(&evt);
                         }
@@ -425,11 +521,11 @@ async fn main(_spawner: Spawner) {
                         send_ota_pending(&mut device, &mut ota_mgr).await;
                     }
 
-                    handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer);
+                    handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer).await;
                     // Start OTA check shortly after joining
                     if matches!(event, StackEvent::Joined { .. }) {
                         ota_query_countdown = 30; // query in 30 seconds
-                        rejoin_backoff_secs = 0;  // cancel any pending rejoin
+                        rejoin_backoff_secs = 0; // cancel any pending rejoin
                         rejoin_countdown = 0;
                     }
                     // Arm auto-rejoin on network leave
@@ -480,24 +576,52 @@ async fn main(_spawner: Spawner) {
                                 // Force send reports for all clusters
                                 {
                                     let mut clusters = [
-                                        ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
-                                        ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
-                                        ClusterRef { endpoint: 1, cluster: &mut power_cluster },
-                                        ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
-                                        ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
-                                        ClusterRef { endpoint: 1, cluster: &mut press_cluster },
-                                        ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                                        ClusterRef {
+                                            endpoint: 1,
+                                            cluster: &mut basic_cluster,
+                                        },
+                                        ClusterRef {
+                                            endpoint: 1,
+                                            cluster: &mut identify_cluster,
+                                        },
+                                        ClusterRef {
+                                            endpoint: 1,
+                                            cluster: &mut power_cluster,
+                                        },
+                                        ClusterRef {
+                                            endpoint: 1,
+                                            cluster: &mut temp_cluster,
+                                        },
+                                        ClusterRef {
+                                            endpoint: 1,
+                                            cluster: &mut hum_cluster,
+                                        },
+                                        ClusterRef {
+                                            endpoint: 1,
+                                            cluster: &mut press_cluster,
+                                        },
+                                        ClusterRef {
+                                            endpoint: 1,
+                                            cluster: &mut illum_cluster,
+                                        },
                                     ];
                                     if let TickResult::Event(ref e) =
                                         device.tick(0, &mut clusters).await
                                     {
-                                        handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
+                                        handle_stack_event(
+                                            e,
+                                            &mut net_state,
+                                            &mut led,
+                                            &mut buzzer,
+                                        )
+                                        .await;
                                     }
                                 }
 
                                 // Update e-paper display
                                 disp_data.joined = net_state == NetworkState::Joined;
-                                disp_data.pressure_history_len = pressure_history.to_display(&mut disp_data.pressure_history);
+                                disp_data.pressure_history_len =
+                                    pressure_history.to_display(&mut disp_data.pressure_history);
                                 disp_data.prev_temperature_centideg = prev_temperature;
                                 disp_data.colon_on = colon_toggle;
                                 let uptime_mins = (uptime_secs / 60) as u16;
@@ -531,16 +655,37 @@ async fn main(_spawner: Spawner) {
 
                 {
                     let mut clusters = [
-                        ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
-                        ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
-                        ClusterRef { endpoint: 1, cluster: &mut power_cluster },
-                        ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
-                        ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
-                        ClusterRef { endpoint: 1, cluster: &mut press_cluster },
-                        ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                        ClusterRef {
+                            endpoint: 1,
+                            cluster: &mut basic_cluster,
+                        },
+                        ClusterRef {
+                            endpoint: 1,
+                            cluster: &mut identify_cluster,
+                        },
+                        ClusterRef {
+                            endpoint: 1,
+                            cluster: &mut power_cluster,
+                        },
+                        ClusterRef {
+                            endpoint: 1,
+                            cluster: &mut temp_cluster,
+                        },
+                        ClusterRef {
+                            endpoint: 1,
+                            cluster: &mut hum_cluster,
+                        },
+                        ClusterRef {
+                            endpoint: 1,
+                            cluster: &mut press_cluster,
+                        },
+                        ClusterRef {
+                            endpoint: 1,
+                            cluster: &mut illum_cluster,
+                        },
                     ];
                     if let TickResult::Event(ref e) = device.tick(0, &mut clusters).await {
-                        handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
+                        handle_stack_event(e, &mut net_state, &mut led, &mut buzzer).await;
                     }
                 }
             }
@@ -551,7 +696,7 @@ async fn main(_spawner: Spawner) {
                 let was_identifying = identify_cluster.is_identifying();
                 identify_cluster.tick(REPORT_INTERVAL_SECS as u16);
                 if identify_cluster.is_identifying() {
-                    buzzer_chirp(&mut buzzer);
+                    buzzer_chirp(&mut buzzer).await;
                     led_flash(&mut led, 2).await;
                 } else if was_identifying {
                     info!("Identify complete");
@@ -596,23 +741,46 @@ async fn main(_spawner: Spawner) {
                     if disp_data.pressure_hpa > 0 {
                         pressure_history.record(disp_data.pressure_hpa);
                     }
-                    disp_data.pressure_history_len = pressure_history.to_display(&mut disp_data.pressure_history);
+                    disp_data.pressure_history_len =
+                        pressure_history.to_display(&mut disp_data.pressure_history);
 
                     // Tick reporting engine — automatically sends due reports
                     {
                         let mut clusters = [
-                            ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
-                            ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
-                            ClusterRef { endpoint: 1, cluster: &mut power_cluster },
-                            ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
-                            ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
-                            ClusterRef { endpoint: 1, cluster: &mut press_cluster },
-                            ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                            ClusterRef {
+                                endpoint: 1,
+                                cluster: &mut basic_cluster,
+                            },
+                            ClusterRef {
+                                endpoint: 1,
+                                cluster: &mut identify_cluster,
+                            },
+                            ClusterRef {
+                                endpoint: 1,
+                                cluster: &mut power_cluster,
+                            },
+                            ClusterRef {
+                                endpoint: 1,
+                                cluster: &mut temp_cluster,
+                            },
+                            ClusterRef {
+                                endpoint: 1,
+                                cluster: &mut hum_cluster,
+                            },
+                            ClusterRef {
+                                endpoint: 1,
+                                cluster: &mut press_cluster,
+                            },
+                            ClusterRef {
+                                endpoint: 1,
+                                cluster: &mut illum_cluster,
+                            },
                         ];
-                        if let TickResult::Event(ref e) =
-                            device.tick(REPORT_INTERVAL_SECS as u16, &mut clusters).await
+                        if let TickResult::Event(ref e) = device
+                            .tick(REPORT_INTERVAL_SECS as u16, &mut clusters)
+                            .await
                         {
-                            handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
+                            handle_stack_event(e, &mut net_state, &mut led, &mut buzzer).await;
                         }
                     }
 
@@ -754,7 +922,10 @@ async fn read_sensors(
 }
 
 /// Send any queued OTA frame to the coordinator.
-async fn send_ota_pending<M: zigbee_mac::MacDriver, F: zigbee_runtime::firmware_writer::FirmwareWriter>(
+async fn send_ota_pending<
+    M: zigbee_mac::MacDriver,
+    F: zigbee_runtime::firmware_writer::FirmwareWriter,
+>(
     device: &mut ZigbeeDevice<M>,
     ota_mgr: &mut OtaManager<F>,
 ) {
@@ -776,7 +947,7 @@ async fn send_ota_pending<M: zigbee_mac::MacDriver, F: zigbee_runtime::firmware_
 }
 
 /// Look up the attribute store (read-only) for a given cluster ID.
-fn handle_stack_event(
+async fn handle_stack_event(
     event: &StackEvent,
     net_state: &mut NetworkState,
     led: &mut gpio::Output<'_>,
@@ -794,7 +965,7 @@ fn handle_stack_event(
             );
             *net_state = NetworkState::Joined;
             led.set_high(); // LED off (active low)
-            buzzer_chirp(buzzer);
+            buzzer_chirp(buzzer).await;
         }
         StackEvent::Left => {
             info!("Left network — auto-rejoin in 30s");
@@ -851,27 +1022,24 @@ async fn led_flash(led: &mut gpio::Output<'_>, count: u8) {
 }
 
 /// Buzzer "join confirmed" chirp: 400 Hz for 10 ms, then 200 Hz for 5 ms.
-/// Uses busy-wait bit-bang, matching the original Arduino firmware.
-fn buzzer_chirp(pin: &mut gpio::Output<'_>) {
-    buzzer_tone(pin, 400, 10);
-    buzzer_tone(pin, 200, 5);
+async fn buzzer_chirp(pin: &mut gpio::Output<'_>) {
+    buzzer_tone(pin, 400, 10).await;
+    buzzer_tone(pin, 200, 5).await;
 }
 
-/// Bit-bang a square wave on the buzzer pin.
+/// Bit-bang a square wave on the buzzer pin (async — yields between half-periods).
 /// `freq_hz`: tone frequency, `duration_ms`: how long to play.
-/// Uses cortex-m busy-wait at 64 MHz (nRF52840 HFCLK).
-fn buzzer_tone(pin: &mut gpio::Output<'_>, freq_hz: u32, duration_ms: u32) {
-    let half_period_us = 500_000 / freq_hz;
-    // 64 MHz → 64 cycles per µs
-    let half_period_cycles = half_period_us * 64;
-    let total_cycles = duration_ms * 1000 * 64;
-    let mut elapsed = 0u32;
-    while elapsed < total_cycles {
+/// Uses Timer::after for delays so the executor can service other tasks.
+async fn buzzer_tone(pin: &mut gpio::Output<'_>, freq_hz: u32, duration_ms: u32) {
+    let half_period_us = 500_000u64 / freq_hz as u64;
+    let total_us = duration_ms as u64 * 1000;
+    let mut elapsed_us = 0u64;
+    while elapsed_us < total_us {
         pin.set_high();
-        cortex_m::asm::delay(half_period_cycles);
+        Timer::after(Duration::from_micros(half_period_us)).await;
         pin.set_low();
-        cortex_m::asm::delay(half_period_cycles);
-        elapsed += half_period_cycles * 2;
+        Timer::after(Duration::from_micros(half_period_us)).await;
+        elapsed_us += half_period_us * 2;
     }
 }
 
