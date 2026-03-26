@@ -21,8 +21,8 @@ const STATE_START: u32 = 0x0000_6000;
 /// nRF52840 flash page size.
 const PAGE_SIZE: u32 = 4096;
 
-/// embassy-boot swap magic: writing this to state partition requests a swap.
-const SWAP_MAGIC: u8 = 0x01;
+/// embassy-boot 0.4 swap magic: state word filled with 0xF0 triggers swap.
+const SWAP_MAGIC: u8 = 0xF0;
 
 /// Firmware writer that writes OTA blocks to the nRF52840 DFU flash slot.
 pub struct NrfFirmwareWriter<'d> {
@@ -134,8 +134,8 @@ impl<'d> FirmwareWriter for NrfFirmwareWriter<'d> {
             .erase(STATE_START, STATE_START + PAGE_SIZE)
             .map_err(|_| FirmwareError::ActivateFailed)?;
 
-        // Write magic word (4-byte aligned)
-        let magic = [SWAP_MAGIC, 0xFF, 0xFF, 0xFF];
+        // Write magic word — all bytes must be SWAP_MAGIC (nRF52840 WRITE_SIZE = 4)
+        let magic = [SWAP_MAGIC; 4];
         self.nvmc
             .write(STATE_START, &magic)
             .map_err(|_| FirmwareError::ActivateFailed)?;
