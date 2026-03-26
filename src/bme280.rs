@@ -130,6 +130,7 @@ pub async fn read(i2c: &mut Twim<'_, peripherals::TWISPI0>, addr: u8) -> Option<
 
     Timer::after(Duration::from_millis(50)).await;
 
+    let mut bme_ready = false;
     for _ in 0..10 {
         let mut status = [0u8];
         if i2c
@@ -138,9 +139,14 @@ pub async fn read(i2c: &mut Twim<'_, peripherals::TWISPI0>, addr: u8) -> Option<
             .is_ok()
             && status[0] & 0x08 == 0
         {
+            bme_ready = true;
             break;
         }
         Timer::after(Duration::from_millis(10)).await;
+    }
+    if !bme_ready {
+        defmt::warn!("BME280 busy timeout (150ms)");
+        return None;
     }
 
     let mut raw = [0u8; 8];

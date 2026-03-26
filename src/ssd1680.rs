@@ -5,7 +5,7 @@
 //! partial update triggers a full LUT refresh to clear ghosting).
 
 use embassy_nrf::{gpio, peripherals, spim};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 
 use defmt::*;
 
@@ -120,8 +120,13 @@ impl<'a> Ssd1680<'a> {
     }
 
     async fn wait_busy(&mut self) {
-        // BUSY HIGH = controller busy
+        // BUSY HIGH = controller busy. Timeout after 5 seconds to prevent hang.
+        let deadline = Instant::now() + Duration::from_secs(5);
         while self.busy.is_high() {
+            if Instant::now() >= deadline {
+                warn!("SSD1680 BUSY timeout (5s)");
+                return;
+            }
             Timer::after(Duration::from_millis(5)).await;
         }
     }

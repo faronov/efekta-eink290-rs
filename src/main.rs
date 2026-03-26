@@ -88,6 +88,51 @@ const REPORT_INTERVAL_SECS: u64 = 60;
 const LONG_PRESS_MS: u64 = 5000;
 const BME280_ADDR: u8 = 0x77;
 const MAX44009_ADDR: u8 = 0x4A;
+const PRESSURE_HISTORY_SIZE: usize = 24;
+
+/// Circular buffer for pressure history (hourly samples for 24h).
+struct PressureHistory {
+    buf: [u16; PRESSURE_HISTORY_SIZE],
+    len: u8,
+    idx: u8,
+    /// Ticks since last stored sample (each tick = REPORT_INTERVAL_SECS).
+    ticks_since_store: u16,
+}
+
+impl PressureHistory {
+    const fn new() -> Self {
+        Self { buf: [0; PRESSURE_HISTORY_SIZE], len: 0, idx: 0, ticks_since_store: 0 }
+    }
+
+    /// Record a pressure reading. Stores one sample per hour.
+    fn record(&mut self, pressure_hpa: u16) {
+        self.ticks_since_store += 1;
+        // Store once per hour: 3600 / REPORT_INTERVAL_SECS = 60 ticks
+        if self.ticks_since_store >= (3600 / REPORT_INTERVAL_SECS) as u16 {
+            self.ticks_since_store = 0;
+            self.buf[self.idx as usize] = pressure_hpa;
+            self.idx = ((self.idx as usize + 1) % PRESSURE_HISTORY_SIZE) as u8;
+            if (self.len as usize) < PRESSURE_HISTORY_SIZE {
+                self.len += 1;
+            }
+        }
+    }
+
+    /// Copy history to display format (oldest first).
+    fn to_display(&self, out: &mut [u16; PRESSURE_HISTORY_SIZE]) -> u8 {
+        let len = self.len as usize;
+        if len == 0 { return 0; }
+        let start = if len < PRESSURE_HISTORY_SIZE {
+            0
+        } else {
+            self.idx as usize
+        };
+        for i in 0..len {
+            out[i] = self.buf[(start + i) % PRESSURE_HISTORY_SIZE];
+        }
+        self.len
+    }
+}
 
 /// 2×AAA NiMH battery voltage scaling constants.
 /// nRF52840 SAADC with VDD/3 internal channel, 10-bit, 0.6V reference.
@@ -278,59 +323,62 @@ async fn main(_spawner: Spawner) {
         let rpt = device.reporting_mut();
 
         // Temperature: report on ±0.25°C change (25 centidegrees), 30-900s
-        let _ = rpt.configure_for_cluster(1, 0x0402, ReportingConfig {
+        if rpt.configure_for_cluster(1, 0x0402, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0000),
             data_type: ZclDataType::I16,
             min_interval: 30, max_interval: 900,
             reportable_change: Some(ZclValue::I16(25)),
-        });
+        }).is_err() { defmt::warn!("Reporting config failed"); }
         // Humidity: report on ±0.5% change (50 centipercent), 30-1200s
-        let _ = rpt.configure_for_cluster(1, 0x0405, ReportingConfig {
+        if rpt.configure_for_cluster(1, 0x0405, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0000),
             data_type: ZclDataType::U16,
             min_interval: 30, max_interval: 1200,
             reportable_change: Some(ZclValue::U16(50)),
-        });
+        }).is_err() { defmt::warn!("Reporting config failed"); }
         // Pressure: report on ±1 hPa change (1 in hPa units), 60-1800s
-        let _ = rpt.configure_for_cluster(1, 0x0403, ReportingConfig {
+        if rpt.configure_for_cluster(1, 0x0403, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0000),
             data_type: ZclDataType::I16,
             min_interval: 60, max_interval: 1800,
             reportable_change: Some(ZclValue::I16(1)),
-        });
+        }).is_err() { defmt::warn!("Reporting config failed"); }
         // Illuminance: report on ~50 lux change (5000 ZCL units), 60-300s
-        let _ = rpt.configure_for_cluster(1, 0x0400, ReportingConfig {
+        if rpt.configure_for_cluster(1, 0x0400, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0000),
             data_type: ZclDataType::U16,
             min_interval: 60, max_interval: 300,
             reportable_change: Some(ZclValue::U16(5000)),
-        });
+        }).is_err() { defmt::warn!("Reporting config failed"); }
         // Battery %: report on ±1% (2 in 0-200 range), 300-3600s
-        let _ = rpt.configure_for_cluster(1, 0x0001, ReportingConfig {
+        if rpt.configure_for_cluster(1, 0x0001, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0021),
             data_type: ZclDataType::U8,
             min_interval: 300, max_interval: 3600,
             reportable_change: Some(ZclValue::U8(2)),
-        });
+        }).is_err() { defmt::warn!("Reporting config failed"); }
         // Battery voltage: report on ±100mV, 300-3600s
-        let _ = rpt.configure_for_cluster(1, 0x0001, ReportingConfig {
+        if rpt.configure_for_cluster(1, 0x0001, ReportingConfig {
             direction: ReportDirection::Send,
             attribute_id: AttributeId(0x0020),
             data_type: ZclDataType::U8,
             min_interval: 300, max_interval: 3600,
             reportable_change: Some(ZclValue::U8(1)),
-        });
+        }).is_err() { defmt::warn!("Reporting config failed"); }
     }
 
     let mut net_state = NetworkState::Initial;
     let mut button_press_start: Option<Instant> = None;
     let mut ota_query_countdown: u32 = 0; // seconds until next OTA query
     const OTA_QUERY_INTERVAL: u32 = 86400; // 24 hours
+    let mut rejoin_backoff_secs: u32 = 0;  // 0 = no auto-rejoin pending
+    let mut rejoin_countdown: u32 = 0;     // seconds until next rejoin attempt
+    let mut pressure_history = PressureHistory::new();
 
     info!("Ready — short press to join, long press (5s) for factory reset");
 
@@ -378,6 +426,14 @@ async fn main(_spawner: Spawner) {
                     // Start OTA check shortly after joining
                     if matches!(event, StackEvent::Joined { .. }) {
                         ota_query_countdown = 30; // query in 30 seconds
+                        rejoin_backoff_secs = 0;  // cancel any pending rejoin
+                        rejoin_countdown = 0;
+                    }
+                    // Arm auto-rejoin on network leave
+                    if matches!(event, StackEvent::Left) {
+                        rejoin_backoff_secs = 30;
+                        rejoin_countdown = 30;
+                        info!("Auto-rejoin armed: 30s");
                     }
                 }
             }
@@ -434,6 +490,7 @@ async fn main(_spawner: Spawner) {
 
                                 // Update e-paper display
                                 disp_data.joined = net_state == NetworkState::Joined;
+                                disp_data.pressure_history_len = pressure_history.to_display(&mut disp_data.pressure_history);
                                 #[cfg(not(feature = "uart-debug"))]
                                 {
                                     epd.wake().await;
@@ -487,6 +544,26 @@ async fn main(_spawner: Spawner) {
                     info!("Identify complete");
                 }
 
+                // ── Auto-rejoin countdown ───────────────────
+                if rejoin_backoff_secs > 0 && !device.is_joined() {
+                    if rejoin_countdown <= REPORT_INTERVAL_SECS as u32 {
+                        info!("Auto-rejoin attempt (backoff={}s)", rejoin_backoff_secs);
+                        net_state = NetworkState::Joining;
+                        device.user_action(UserAction::Toggle);
+                        // Exponential backoff: 30 → 60 → 120 → give up
+                        if rejoin_backoff_secs >= 120 {
+                            info!("Auto-rejoin gave up after 3 attempts");
+                            rejoin_backoff_secs = 0;
+                            rejoin_countdown = 0;
+                        } else {
+                            rejoin_backoff_secs *= 2;
+                            rejoin_countdown = rejoin_backoff_secs;
+                        }
+                    } else {
+                        rejoin_countdown -= REPORT_INTERVAL_SECS as u32;
+                    }
+                }
+
                 if device.is_joined() {
                     // Read sensors and update cluster attributes
                     let mut disp_data = read_sensors(
@@ -501,6 +578,12 @@ async fn main(_spawner: Spawner) {
                         max44009_ok,
                     )
                     .await;
+
+                    // Record pressure into history ring buffer
+                    if disp_data.pressure_hpa > 0 {
+                        pressure_history.record(disp_data.pressure_hpa);
+                    }
+                    disp_data.pressure_history_len = pressure_history.to_display(&mut disp_data.pressure_history);
 
                     // Tick reporting engine — automatically sends due reports
                     {
@@ -653,7 +736,7 @@ async fn send_ota_pending<M: zigbee_mac::MacDriver, F: zigbee_runtime::firmware_
     ota_mgr: &mut OtaManager<F>,
 ) {
     while let Some(frame) = ota_mgr.take_pending_frame() {
-        let _ = device
+        if device
             .send_zcl_frame(
                 zigbee_types::ShortAddress(0x0000), // coordinator
                 frame.endpoint,
@@ -661,7 +744,11 @@ async fn send_ota_pending<M: zigbee_mac::MacDriver, F: zigbee_runtime::firmware_
                 frame.cluster_id,
                 &frame.zcl_data,
             )
-            .await;
+            .await
+            .is_err()
+        {
+            warn!("OTA: send_zcl_frame failed");
+        }
     }
 }
 
@@ -687,8 +774,15 @@ fn handle_stack_event(
             buzzer_chirp(buzzer);
         }
         StackEvent::Left => {
-            info!("Left network");
+            info!("Left network — auto-rejoin in 30s");
             *net_state = NetworkState::Initial;
+        }
+        StackEvent::FactoryResetRequested => {
+            info!("Factory reset requested by coordinator!");
+            // Leave network, clear state, reboot
+            *net_state = NetworkState::Initial;
+            led.set_low();
+            cortex_m::peripheral::SCB::sys_reset();
         }
         StackEvent::CommissioningComplete { success } => {
             if *success {
