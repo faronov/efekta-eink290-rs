@@ -65,15 +65,14 @@ use zigbee_aps::PROFILE_HOME_AUTOMATION;
 use zigbee_nwk::DeviceType;
 use zigbee_runtime::event_loop::{StackEvent, TickResult};
 use zigbee_runtime::ota::{OtaConfig, OtaManager};
-use zigbee_runtime::{UserAction, ZigbeeDevice};
+use zigbee_runtime::{ClusterRef, UserAction, ZigbeeDevice};
+use zigbee_zcl::clusters::basic::BasicCluster;
 use zigbee_zcl::clusters::humidity::HumidityCluster;
 use zigbee_zcl::clusters::identify::IdentifyCluster;
 use zigbee_zcl::clusters::illuminance::IlluminanceCluster;
 use zigbee_zcl::clusters::power_config::PowerConfigCluster;
 use zigbee_zcl::clusters::pressure::PressureCluster;
 use zigbee_zcl::clusters::temperature::TemperatureCluster;
-use zigbee_zcl::clusters::Cluster;
-use zigbee_zcl::ClusterId;
 
 mod bme280;
 #[cfg_attr(feature = "uart-debug", allow(dead_code))]
@@ -231,6 +230,12 @@ async fn main(_spawner: Spawner) {
     let mut ota_mgr = OtaManager::new(fw_writer, ota_config);
 
     // ── ZCL cluster instances ───────────────────────────────
+    let mut basic_cluster = BasicCluster::new(
+        b"Efekta",
+        b"EInk290-MultiSensor",
+        env!("BUILD_DATE").as_bytes(),
+        concat!(env!("CARGO_PKG_VERSION"), "-rs").as_bytes(),
+    );
     let mut identify_cluster = IdentifyCluster::new();
     let mut temp_cluster = TemperatureCluster::new(-4000, 12500);
     let mut hum_cluster = HumidityCluster::new(0, 10000);
@@ -340,96 +345,19 @@ async fn main(_spawner: Spawner) {
         {
             // ── Incoming MAC frame ──────────────────────────
             Either3::First(Ok(indication)) => {
-                if let Some(event) = device.process_incoming(&indication).await {
-                    if let StackEvent::CommandReceived {
-                        src_addr, endpoint, cluster_id, command_id, seq_number, ref payload,
-                    } = event {
-                        // Handle ZCL global commands: Read Attributes (0x00), Write Attributes (0x02), Discover (0x0C)
-                        match command_id {
-                            0x00 => {
-                                // Read Attributes
-                                use zigbee_zcl::foundation::read_attributes::{ReadAttributesRequest, process_read_dyn};
-                                if let Some(req) = ReadAttributesRequest::parse(payload.as_slice()) {
-                                    let store = cluster_store(
-                                        cluster_id,
-                                        &temp_cluster, &hum_cluster, &press_cluster,
-                                        &illum_cluster, &power_cluster, &identify_cluster,
-                                    );
-                                    if let Some(s) = store {
-                                        let resp = process_read_dyn(s, &req);
-                                        let mut buf = [0u8; 200];
-                                        let len = resp.serialize(&mut buf);
-                                        device.queue_global_response(
-                                            src_addr, endpoint, endpoint, cluster_id,
-                                            seq_number, 0x01, &buf[..len],
-                                        );
-                                    }
-                                }
-                            }
-                            0x02 => {
-                                // Write Attributes
-                                use zigbee_zcl::foundation::write_attributes::{WriteAttributesRequest, process_write_dyn};
-                                if let Some(req) = WriteAttributesRequest::parse(payload.as_slice()) {
-                                    let store = cluster_store_mut(
-                                        cluster_id,
-                                        &mut temp_cluster, &mut hum_cluster, &mut press_cluster,
-                                        &mut illum_cluster, &mut power_cluster, &mut identify_cluster,
-                                    );
-                                    if let Some(s) = store {
-                                        let resp = process_write_dyn(s, &req);
-                                        let mut buf = [0u8; 64];
-                                        let len = resp.serialize(&mut buf);
-                                        device.queue_global_response(
-                                            src_addr, endpoint, endpoint, cluster_id,
-                                            seq_number, 0x04, &buf[..len],
-                                        );
-                                    }
-                                }
-                            }
-                            0x05 => {
-                                // Write Attributes No Response
-                                use zigbee_zcl::foundation::write_attributes::{WriteAttributesRequest, process_write_no_response_dyn};
-                                if let Some(req) = WriteAttributesRequest::parse(payload.as_slice()) {
-                                    let store = cluster_store_mut(
-                                        cluster_id,
-                                        &mut temp_cluster, &mut hum_cluster, &mut press_cluster,
-                                        &mut illum_cluster, &mut power_cluster, &mut identify_cluster,
-                                    );
-                                    if let Some(s) = store {
-                                        process_write_no_response_dyn(s, &req);
-                                    }
-                                }
-                            }
-                            0x0C => {
-                                // Discover Attributes
-                                use zigbee_zcl::foundation::discover::{DiscoverAttributesRequest, process_discover_dyn};
-                                if let Some(req) = DiscoverAttributesRequest::parse(payload.as_slice()) {
-                                    let store = cluster_store(
-                                        cluster_id,
-                                        &temp_cluster, &hum_cluster, &press_cluster,
-                                        &illum_cluster, &power_cluster, &identify_cluster,
-                                    );
-                                    if let Some(s) = store {
-                                        let resp = process_discover_dyn(s, &req);
-                                        let mut buf = [0u8; 128];
-                                        let len = resp.serialize(&mut buf);
-                                        device.queue_global_response(
-                                            src_addr, endpoint, endpoint, cluster_id,
-                                            seq_number, 0x0D, &buf[..len],
-                                        );
-                                    }
-                                }
-                            }
-                            _ => {
-                                // Route Identify cluster commands
-                                if cluster_id == ClusterId::IDENTIFY.0 {
-                                    let _ = identify_cluster.handle_command(
-                                        zigbee_zcl::CommandId(command_id),
-                                        payload.as_slice(),
-                                    );
-                                }
-                            }
-                        }
+                let mut clusters = [
+                    ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
+                    ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
+                    ClusterRef { endpoint: 1, cluster: &mut power_cluster },
+                    ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
+                    ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
+                    ClusterRef { endpoint: 1, cluster: &mut press_cluster },
+                    ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                ];
+                if let Some(event) = device.process_incoming(&indication, &mut clusters).await {
+                    // Check identify state change after command dispatch
+                    if identify_cluster.is_identifying() {
+                        buzzer_chirp(&mut buzzer);
                     }
                     handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer);
                     // Start OTA check shortly after joining
@@ -472,42 +400,22 @@ async fn main(_spawner: Spawner) {
                                 )
                                 .await;
                                 // Force send reports for all clusters
-                                let ep = 1u8;
-                                device
-                                    .check_and_send_cluster_reports(
-                                        ep,
-                                        ClusterId::POWER_CONFIG.0,
-                                        power_cluster.attributes(),
-                                    )
-                                    .await;
-                                device
-                                    .check_and_send_cluster_reports(
-                                        ep,
-                                        ClusterId::TEMPERATURE.0,
-                                        temp_cluster.attributes(),
-                                    )
-                                    .await;
-                                device
-                                    .check_and_send_cluster_reports(
-                                        ep,
-                                        ClusterId::HUMIDITY.0,
-                                        hum_cluster.attributes(),
-                                    )
-                                    .await;
-                                device
-                                    .check_and_send_cluster_reports(
-                                        ep,
-                                        ClusterId::PRESSURE.0,
-                                        press_cluster.attributes(),
-                                    )
-                                    .await;
-                                device
-                                    .check_and_send_cluster_reports(
-                                        ep,
-                                        ClusterId::ILLUMINANCE.0,
-                                        illum_cluster.attributes(),
-                                    )
-                                    .await;
+                                {
+                                    let mut clusters = [
+                                        ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut power_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut press_cluster },
+                                        ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                                    ];
+                                    if let TickResult::Event(ref e) =
+                                        device.tick(0, &mut clusters).await
+                                    {
+                                        handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
+                                    }
+                                }
 
                                 // Update e-paper display
                                 disp_data.joined = net_state == NetworkState::Joined;
@@ -536,23 +444,28 @@ async fn main(_spawner: Spawner) {
                     Timer::after(Duration::from_millis(200)).await;
                 }
 
-                if let TickResult::Event(ref e) = device.tick(0).await {
-                    handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
+                {
+                    let mut clusters = [
+                        ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut power_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut press_cluster },
+                        ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                    ];
+                    if let TickResult::Event(ref e) = device.tick(0, &mut clusters).await {
+                        handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
+                    }
                 }
             }
 
             // ── Periodic sensor report ──────────────────────
             Either3::Third(_) => {
-                // Tick reporting timers first
-                if let TickResult::Event(ref e) = device.tick(REPORT_INTERVAL_SECS as u16).await {
-                    handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
-                }
-
                 // Tick identify cluster countdown
                 let was_identifying = identify_cluster.is_identifying();
                 identify_cluster.tick(REPORT_INTERVAL_SECS as u16);
                 if identify_cluster.is_identifying() {
-                    // Beep buzzer + flash LED each cycle while identifying
                     buzzer_chirp(&mut buzzer);
                     led_flash(&mut led, 2).await;
                 } else if was_identifying {
@@ -574,43 +487,23 @@ async fn main(_spawner: Spawner) {
                     )
                     .await;
 
-                    // Send ZCL attribute reports for each cluster (if configured)
-                    let ep = 1u8;
-                    device
-                        .check_and_send_cluster_reports(
-                            ep,
-                            ClusterId::POWER_CONFIG.0,
-                            power_cluster.attributes(),
-                        )
-                        .await;
-                    device
-                        .check_and_send_cluster_reports(
-                            ep,
-                            ClusterId::TEMPERATURE.0,
-                            temp_cluster.attributes(),
-                        )
-                        .await;
-                    device
-                        .check_and_send_cluster_reports(
-                            ep,
-                            ClusterId::HUMIDITY.0,
-                            hum_cluster.attributes(),
-                        )
-                        .await;
-                    device
-                        .check_and_send_cluster_reports(
-                            ep,
-                            ClusterId::PRESSURE.0,
-                            press_cluster.attributes(),
-                        )
-                        .await;
-                    device
-                        .check_and_send_cluster_reports(
-                            ep,
-                            ClusterId::ILLUMINANCE.0,
-                            illum_cluster.attributes(),
-                        )
-                        .await;
+                    // Tick reporting engine — automatically sends due reports
+                    {
+                        let mut clusters = [
+                            ClusterRef { endpoint: 1, cluster: &mut basic_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut identify_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut power_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut temp_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut hum_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut press_cluster },
+                            ClusterRef { endpoint: 1, cluster: &mut illum_cluster },
+                        ];
+                        if let TickResult::Event(ref e) =
+                            device.tick(REPORT_INTERVAL_SECS as u16, &mut clusters).await
+                        {
+                            handle_stack_event(e, &mut net_state, &mut led, &mut buzzer);
+                        }
+                    }
 
                     // Update e-paper display
                     disp_data.joined = true;
@@ -757,47 +650,6 @@ async fn read_sensors(
 }
 
 /// Look up the attribute store (read-only) for a given cluster ID.
-fn cluster_store<'a>(
-    cluster_id: u16,
-    temp: &'a TemperatureCluster,
-    hum: &'a HumidityCluster,
-    press: &'a PressureCluster,
-    illum: &'a IlluminanceCluster,
-    power: &'a PowerConfigCluster,
-    identify: &'a IdentifyCluster,
-) -> Option<&'a dyn zigbee_zcl::clusters::AttributeStoreAccess> {
-    match cluster_id {
-        0x0402 => Some(temp.attributes()),
-        0x0405 => Some(hum.attributes()),
-        0x0403 => Some(press.attributes()),
-        0x0400 => Some(illum.attributes()),
-        0x0001 => Some(power.attributes()),
-        0x0003 => Some(identify.attributes()),
-        _ => None,
-    }
-}
-
-/// Look up the attribute store (mutable) for a given cluster ID.
-fn cluster_store_mut<'a>(
-    cluster_id: u16,
-    temp: &'a mut TemperatureCluster,
-    hum: &'a mut HumidityCluster,
-    press: &'a mut PressureCluster,
-    illum: &'a mut IlluminanceCluster,
-    power: &'a mut PowerConfigCluster,
-    identify: &'a mut IdentifyCluster,
-) -> Option<&'a mut dyn zigbee_zcl::clusters::AttributeStoreMutAccess> {
-    match cluster_id {
-        0x0402 => Some(temp.attributes_mut()),
-        0x0405 => Some(hum.attributes_mut()),
-        0x0403 => Some(press.attributes_mut()),
-        0x0400 => Some(illum.attributes_mut()),
-        0x0001 => Some(power.attributes_mut()),
-        0x0003 => Some(identify.attributes_mut()),
-        _ => None,
-    }
-}
-
 fn handle_stack_event(
     event: &StackEvent,
     net_state: &mut NetworkState,
