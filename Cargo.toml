@@ -14,13 +14,13 @@ default = []
 uart-debug = []
 
 [dependencies]
-# Zigbee stack (git dependency)
-zigbee-types = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
-zigbee-mac = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master", features = ["nrf52840"] }
-zigbee-nwk = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
-zigbee-aps = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
-zigbee-zcl = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master" }
-zigbee-runtime = { git = "https://github.com/faronov/zigbee-rs.git", branch = "master", features = ["ota"] }
+# Zigbee stack
+zigbee-types = { git = "https://github.com/faronov/zigbee-rs.git", rev = "9e10653" }
+zigbee-mac = { git = "https://github.com/faronov/zigbee-rs.git", rev = "9e10653", features = ["nrf52840"] }
+zigbee-nwk = { git = "https://github.com/faronov/zigbee-rs.git", rev = "9e10653" }
+zigbee-aps = { git = "https://github.com/faronov/zigbee-rs.git", rev = "9e10653" }
+zigbee-zcl = { git = "https://github.com/faronov/zigbee-rs.git", rev = "9e10653" }
+zigbee-runtime = { git = "https://github.com/faronov/zigbee-rs.git", rev = "9e10653", features = ["ota"] }
 
 # nRF52840 Embassy HAL
 # nfc-pins-as-gpio: P0.09/P0.10 are NFC pins by default; enable GPIO for UART TX/RX

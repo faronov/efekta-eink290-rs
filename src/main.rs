@@ -359,6 +359,21 @@ async fn main(_spawner: Spawner) {
                     if identify_cluster.is_identifying() {
                         buzzer_chirp(&mut buzzer);
                     }
+
+                    // ── OTA: route cluster 0x0019 commands to OtaManager ──
+                    if let StackEvent::CommandReceived { cluster_id: 0x0019, command_id, ref payload, .. } = event {
+                        if let Some(evt) = ota_mgr.handle_incoming(command_id, payload.as_slice()) {
+                            handle_ota_event(&evt);
+                        }
+                        // Immediately send any OTA response frame (block request, etc.)
+                        send_ota_pending(&mut device, &mut ota_mgr).await;
+                        // OTA tick for pending block writes → next block request
+                        if let Some(evt) = ota_mgr.tick(0) {
+                            handle_ota_event(&evt);
+                        }
+                        send_ota_pending(&mut device, &mut ota_mgr).await;
+                    }
+
                     handle_stack_event(&event, &mut net_state, &mut led, &mut buzzer);
                     // Start OTA check shortly after joining
                     if matches!(event, StackEvent::Joined { .. }) {
@@ -522,31 +537,14 @@ async fn main(_spawner: Spawner) {
                     if let Some(evt) = ota_mgr.tick(ota_elapsed) {
                         handle_ota_event(&evt);
                     }
-                    // Send any queued OTA frames
-                    if let Some(frame) = ota_mgr.take_pending_frame() {
-                        let _ = device.send_zcl_frame(
-                            zigbee_types::ShortAddress(0x0000), // coordinator
-                            frame.endpoint,
-                            frame.endpoint,
-                            frame.cluster_id,
-                            &frame.zcl_data,
-                        ).await;
-                    }
+                    send_ota_pending(&mut device, &mut ota_mgr).await;
 
                     // Check if it's time to query for new firmware
                     if ota_query_countdown <= REPORT_INTERVAL_SECS as u32 {
                         if let Some(evt) = ota_mgr.start_query() {
                             handle_ota_event(&evt);
                         }
-                        if let Some(frame) = ota_mgr.take_pending_frame() {
-                            let _ = device.send_zcl_frame(
-                                zigbee_types::ShortAddress(0x0000),
-                                frame.endpoint,
-                                frame.endpoint,
-                                frame.cluster_id,
-                                &frame.zcl_data,
-                            ).await;
-                        }
+                        send_ota_pending(&mut device, &mut ota_mgr).await;
                         ota_query_countdown = OTA_QUERY_INTERVAL;
                     } else {
                         ota_query_countdown -= REPORT_INTERVAL_SECS as u32;
@@ -647,6 +645,24 @@ async fn read_sensors(
     }
 
     disp
+}
+
+/// Send any queued OTA frame to the coordinator.
+async fn send_ota_pending<M: zigbee_mac::MacDriver, F: zigbee_runtime::firmware_writer::FirmwareWriter>(
+    device: &mut ZigbeeDevice<M>,
+    ota_mgr: &mut OtaManager<F>,
+) {
+    while let Some(frame) = ota_mgr.take_pending_frame() {
+        let _ = device
+            .send_zcl_frame(
+                zigbee_types::ShortAddress(0x0000), // coordinator
+                frame.endpoint,
+                frame.endpoint,
+                frame.cluster_id,
+                &frame.zcl_data,
+            )
+            .await;
+    }
 }
 
 /// Look up the attribute store (read-only) for a given cluster ID.
