@@ -283,6 +283,7 @@ async fn main(_spawner: Spawner) {
         endpoint: 1,
         block_size: 48,
         auto_accept: true,
+        hardware_version: None,
     };
     let mut ota_mgr = OtaManager::new(fw_writer, ota_config);
 
@@ -524,7 +525,7 @@ async fn main(_spawner: Spawner) {
                             } = event
                             {
                                 if let Some(evt) =
-                                    $ota_mgr.handle_incoming(command_id, payload.as_slice())
+                                    $ota_mgr.handle_incoming(command_id, payload.as_slice(), None)
                                 {
                                     handle_ota_event(&evt);
                                 }
