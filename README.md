@@ -10,7 +10,7 @@ This is a Rust port of the [original C/Zephyr/ZBOSS firmware](https://github.com
 |-----------|---------|
 | MCU | nRF52840 (custom Efekta PCB) |
 | Sensors | BME280 (temp/humidity/pressure, I2C 0x77) + MAX44009 (lux, I2C 0x4A) |
-| Display | 2.9" e-paper (SSD1680/UC8151) — *future* |
+| Display | 2.9" e-paper (SSD1680) — 128×296, partial refresh |
 | Button | P0.24 (active low) |
 | LED | P0.02 (active low) |
 | Power | CR2032 battery |
@@ -51,15 +51,18 @@ This firmware uses [zigbee-rs](https://github.com/faronov/zigbee-rs) as a git de
 ## Status
 
 🚧 **Work in progress** — the Zigbee stack is functional but some features are still being developed:
-- [x] BME280 driver (temperature, humidity, pressure)
+- [x] BME280 driver (temperature, humidity, pressure) — async I2C
 - [x] MAX44009 driver (illuminance)
 - [x] Button handling (short/long press)
 - [x] LED patterns (Aqara-style)
-- [x] ZCL attribute reporting
-- [ ] E-paper display (SSD1680/UC8151)
+- [x] ZCL attribute reporting with configurable thresholds
+- [x] E-paper display (SSD1680) — dashboard with pressure graph, sensor readings
+- [x] Battery voltage monitoring (SAADC VDD, NiMH piecewise curve)
+- [x] OTA firmware update (embassy-boot swap-based)
+- [x] Poll Control cluster
+- [x] Identify cluster (buzzer chirp)
 - [ ] Deep sleep between reports
 - [ ] NVS persistence across reboots
-- [ ] Battery voltage monitoring
 
 ## License
 
