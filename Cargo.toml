@@ -15,6 +15,7 @@ uart-debug = []
 
 [dependencies]
 # Zigbee stack
+# Zigbee stack
 zigbee-types = { git = "https://github.com/faronov/zigbee-rs.git", rev = "d0288f3" }
 zigbee-mac = { git = "https://github.com/faronov/zigbee-rs.git", rev = "d0288f3", features = ["nrf52840"] }
 zigbee-nwk = { git = "https://github.com/faronov/zigbee-rs.git", rev = "d0288f3" }
